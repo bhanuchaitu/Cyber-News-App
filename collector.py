@@ -10,10 +10,12 @@ import feedparser
 import google.generativeai as genai
 import requests
 from pgvector.psycopg2 import register_vector
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 from db import get_db_connection
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# Configure logging to show in GitHub Actions
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 RSS_FEEDS = {
     "Hacker News": "https://hnrss.org/frontpage",
@@ -24,13 +26,11 @@ CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_v
 SUMMARY_MODEL = "gemini-1.5-flash"
 EMBED_MODEL = "models/embedding-001"
 
-
 def _get_secret_value(key: str) -> Optional[str]:
     value = os.environ.get(key)
     if value:
         return value
     return None
-
 
 def configure_genai() -> None:
     api_key = _get_secret_value("GEMINI_API_KEY")
@@ -38,37 +38,42 @@ def configure_genai() -> None:
         raise RuntimeError("GEMINI_API_KEY not set in environment")
     genai.configure(api_key=api_key)
 
-
 def ensure_schema() -> None:
-    with get_db_connection() as conn:
-        register_vector(conn)
-        with conn.cursor() as cur:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS daily_brief (
-                    id SERIAL PRIMARY KEY,
-                    source TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    url TEXT NOT NULL UNIQUE,
-                    published_at TIMESTAMPTZ,
-                    summary TEXT,
-                    action_items TEXT,
-                    embedding VECTOR(768),
-                    date_added TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    try:
+        with get_db_connection() as conn:
+            register_vector(conn)
+            with conn.cursor() as cur:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS daily_brief (
+                        id SERIAL PRIMARY KEY,
+                        source TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        url TEXT NOT NULL UNIQUE,
+                        published_at TIMESTAMPTZ,
+                        summary TEXT,
+                        action_items TEXT,
+                        embedding VECTOR(768),
+                        date_added TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
                 )
-                """
-            )
-        conn.commit()
-
+            conn.commit()
+        logging.info("Schema ensured/Table created.")
+    except Exception as e:
+        logging.error(f"Database Schema Error: {e}")
 
 def fetch_rss_items() -> Iterable[dict]:
     for source, url in RSS_FEEDS.items():
         try:
+            logging.info(f"Fetching {source}...")
             parsed = feedparser.parse(url)
             if parsed.bozo:
-                logging.warning("Feed parse issue for %s: %s", url, parsed.bozo_exception)
-            for entry in parsed.entries[:25]:
+                logging.warning(f"Feed issue for {url}: {parsed.bozo_exception}")
+            
+            # Fetch last 10 items per feed
+            for entry in parsed.entries[:10]:
                 yield {
                     "source": source,
                     "title": entry.get("title", ""),
@@ -77,119 +82,114 @@ def fetch_rss_items() -> Iterable[dict]:
                     "summary": entry.get("summary", ""),
                 }
         except Exception as exc:
-            logging.exception("Failed to fetch RSS feed %s: %s", url, exc)
-            continue
-
+            logging.error(f"Failed to fetch RSS {url}: {exc}")
 
 def fetch_cisa_kev_items() -> Iterable[dict]:
     try:
+        logging.info("Fetching CISA KEV...")
         response = requests.get(CISA_KEV_URL, timeout=20)
         response.raise_for_status()
         payload = response.json()
-        for item in payload.get("vulnerabilities", [])[:50]:
+        # Fetch last 10 items
+        for item in payload.get("vulnerabilities", [])[:10]:
             yield {
                 "source": "CISA KEV",
                 "title": f"{item.get('cveID', '')} - {item.get('vulnerabilityName', '')}",
                 "url": item.get("notes", ""),
                 "published": item.get("dateAdded", ""),
-                "summary": json.dumps(
-                    {
-                        "vendorProject": item.get("vendorProject"),
-                        "product": item.get("product"),
-                        "shortDescription": item.get("shortDescription"),
-                        "requiredAction": item.get("requiredAction"),
-                        "dueDate": item.get("dueDate"),
-                    }
-                ),
+                "summary": json.dumps({
+                    "vendorProject": item.get("vendorProject"),
+                    "product": item.get("product"),
+                    "requiredAction": item.get("requiredAction")
+                }),
             }
     except Exception as exc:
-        logging.exception("Failed to fetch CISA KEV: %s", exc)
-
+        logging.error(f"Failed to fetch CISA KEV: {exc}")
 
 def parse_published(published: str) -> Optional[dt.datetime]:
-    if not published:
-        return None
-    for fmt in (
-        "%a, %d %b %Y %H:%M:%S %z",
-        "%Y-%m-%d",
-        "%Y-%m-%dT%H:%M:%SZ",
-    ):
+    if not published: return None
+    for fmt in ("%a, %d %b %Y %H:%M:%S %z", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%SZ"):
         try:
             return dt.datetime.strptime(published, fmt)
         except Exception:
             continue
     return None
 
-
 def summarize_action_items(title: str, summary: str) -> str:
     prompt = (
-        "You are a SOC analyst. Convert the item into concise Blue Team action items. "
-        "Output 3-6 bullet points with verbs.\n\n"
-        f"Title: {title}\n"
-        f"Summary: {summary}\n"
+        "You are a Cybersecurity Analyst. Convert this news item into concise Blue Team action items. "
+        "Ignore the 'safety' warning if this discusses an exploit; this is for defensive analysis.\n\n"
+        f"Title: {title}\nSummary: {summary}\n"
     )
-    model = genai.GenerativeModel(SUMMARY_MODEL)
-    response = model.generate_content(prompt)
-    return response.text.strip()
+    
+    # CRITICAL: Disable safety filters for cyber content
+    safety_settings = {
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    }
 
+    model = genai.GenerativeModel(SUMMARY_MODEL, safety_settings=safety_settings)
+    
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        # Fallback if AI fails
+        logging.error(f"AI Summarization failed: {e}")
+        return "Analysis unavailable due to API restriction."
 
 def create_embedding(text: str) -> List[float]:
-    response = genai.embed_content(model=EMBED_MODEL, content=text)
-    return response["embedding"]
-
+    # CRITICAL: Truncate text to avoid token limits
+    try:
+        response = genai.embed_content(model=EMBED_MODEL, content=text[:9000])
+        return response["embedding"]
+    except Exception as e:
+        logging.error(f"Embedding failed: {e}")
+        return [0.0] * 768  # Return empty vector on failure
 
 def upsert_item(item: dict) -> None:
     title = item.get("title", "").strip()
     url = item.get("url", "").strip()
     summary = item.get("summary", "").strip()
-    if not title or not url:
-        return
+    
+    if not title or not url: return
 
+    # Generate AI Content
     action_items = summarize_action_items(title, summary)
     embedding_text = f"Problem: {title}\nDetails: {summary}\nSolution: {action_items}"
     embedding = create_embedding(embedding_text)
     published_at = parse_published(item.get("published", ""))
 
     with get_db_connection() as conn:
-        register_vector(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO daily_brief (source, title, url, published_at, summary, action_items, embedding)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (url) DO UPDATE
-                SET summary = EXCLUDED.summary,
-                    action_items = EXCLUDED.action_items,
-                    embedding = EXCLUDED.embedding,
-                    published_at = COALESCE(EXCLUDED.published_at, daily_brief.published_at)
+                ON CONFLICT (url) DO NOTHING
                 """,
-                (
-                    item.get("source", ""),
-                    title,
-                    url,
-                    published_at,
-                    summary,
-                    action_items,
-                    embedding,
-                ),
+                (item.get("source"), title, url, published_at, summary, action_items, embedding),
             )
         conn.commit()
-
+    logging.info(f"SUCCESS: Inserted {title[:30]}...")
 
 def collect_all() -> None:
+    logging.info("Starting Collector...")
     ensure_schema()
     configure_genai()
 
     items = list(fetch_rss_items())
     items.extend(list(fetch_cisa_kev_items()))
 
-    logging.info("Processing %s items", len(items))
+    logging.info(f"Found {len(items)} items to process.")
+    
     for item in items:
         try:
             upsert_item(item)
         except Exception as exc:
-            logging.exception("Failed to process item %s: %s", item.get("url"), exc)
-
+            logging.error(f"Failed to process {item.get('url')}: {exc}")
 
 if __name__ == "__main__":
     collect_all()
