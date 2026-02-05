@@ -9,7 +9,8 @@ from typing import Iterable, List, Optional
 
 import feedparser
 import requests
-from google import genai
+import google.genai as genai
+from google.genai import types
 from pgvector.psycopg2 import register_vector
 
 from db import get_db_connection
@@ -127,10 +128,22 @@ def summarize_action_items(title: str, summary: str) -> str:
     
     conf = types.GenerateContentConfig(
         safety_settings=[
-            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE,
+            ),
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE,
+            ),
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE,
+            ),
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE,
+            ),
         ]
     )
 
@@ -150,8 +163,11 @@ def create_embedding(text: str) -> List[float]:
     try:
         client = get_genai_client()
         response = client.models.embed_content(model=EMBED_MODEL, contents=text[:9000])
-        if response.embeddings:
-            return response.embeddings[0].values
+        values: Optional[List[float]] = None
+        if response.embeddings and response.embeddings[0].values:
+            values = list(response.embeddings[0].values)
+        if values:
+            return values
         return [0.0] * 768
     except Exception as e:
         logging.error(f"Embedding failed: {e}")
