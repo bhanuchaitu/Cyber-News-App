@@ -44,7 +44,8 @@ def create_embedding(text: str) -> List[float]:
     client = get_genai_client()
     if not client:
         return [0.0] * 768
-    response = client.models.embed_content(model=EMBED_MODEL, contents=text)
+    # Update: Add [:9000] to match collector.py safety
+    response = client.models.embed_content(model=EMBED_MODEL, contents=text[:9000])
     if response.embeddings:
         return response.embeddings[0].values
     return [0.0] * 768
