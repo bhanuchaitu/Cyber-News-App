@@ -219,7 +219,7 @@ def collect_all() -> None:
             upsert_item(item)
             # CRITICAL: Wait 15 seconds between items to respect free tier limits
             logging.info("Sleeping 15s to avoid rate limit...")
-            time.sleep(15) 
+            time.sleep(60) 
         except Exception as exc:
             logging.error(f"Failed to process {item.get('url')}: {exc}")
 
