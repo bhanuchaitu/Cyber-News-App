@@ -22,7 +22,7 @@ RSS_FEEDS = {
 }
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
-SUMMARY_MODEL = os.environ.get("GEMINI_SUMMARY_MODEL", "gemini-2.0-flash")
+SUMMARY_MODEL = os.environ.get("GEMINI_SUMMARY_MODEL", "gemini-3.0-flash")
 EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "text-embedding-004")
 
 _GENAI_CLIENT: Optional[genai.Client] = None
