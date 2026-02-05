@@ -23,7 +23,7 @@ RSS_FEEDS = {
 }
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
-SUMMARY_MODEL = "gemini-1.5-flash"
+SUMMARY_MODEL = "gemini-3.0-flash"
 EMBED_MODEL = "models/embedding-001"
 
 def _get_secret_value(key: str) -> Optional[str]:
