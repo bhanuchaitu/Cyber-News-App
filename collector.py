@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import logging
 import os
+import time  # <--- Added this
 from typing import Iterable, List, Optional
 
 import feedparser
@@ -23,9 +24,8 @@ RSS_FEEDS = {
 }
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
-# Updated for 2026
-SUMMARY_MODEL = "gemini-2.0-flash"
-EMBED_MODEL = "text-embedding-004"
+SUMMARY_MODEL = os.environ.get("GEMINI_SUMMARY_MODEL", "gemini-2.0-flash")
+EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "text-embedding-004")
 
 _GENAI_CLIENT: Optional[genai.Client] = None
 
@@ -78,8 +78,7 @@ def fetch_rss_items() -> Iterable[dict]:
         try:
             logging.info(f"Fetching {source}...")
             parsed = feedparser.parse(url)
-            # Fetch last 10 items per feed
-            for entry in parsed.entries[:10]:
+            for entry in parsed.entries[:5]: # Reduced to 5 per feed to save quota
                 yield {
                     "source": source,
                     "title": entry.get("title", ""),
@@ -96,7 +95,7 @@ def fetch_cisa_kev_items() -> Iterable[dict]:
         response = requests.get(CISA_KEV_URL, timeout=20)
         response.raise_for_status()
         payload = response.json()
-        for item in payload.get("vulnerabilities", [])[:10]:
+        for item in payload.get("vulnerabilities", [])[:5]: # Reduced to 5
             yield {
                 "source": "CISA KEV",
                 "title": f"{item.get('cveID', '')} - {item.get('vulnerabilityName', '')}",
@@ -127,25 +126,12 @@ def summarize_action_items(title: str, summary: str) -> str:
         f"Title: {title}\nSummary: {summary}\n"
     )
     
-    # CRITICAL: Disable safety filters so Cyber news isn't blocked
     conf = types.GenerateContentConfig(
         safety_settings=[
-            types.SafetySetting(
-                category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                threshold="BLOCK_NONE"
-            ),
-            types.SafetySetting(
-                category="HARM_CATEGORY_HARASSMENT",
-                threshold="BLOCK_NONE"
-            ),
-            types.SafetySetting(
-                category="HARM_CATEGORY_HATE_SPEECH",
-                threshold="BLOCK_NONE"
-            ),
-            types.SafetySetting(
-                category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                threshold="BLOCK_NONE"
-            ),
+            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
         ]
     )
 
@@ -203,7 +189,7 @@ def upsert_item(item: dict) -> None:
 def collect_all() -> None:
     logging.info("Starting Collector...")
     ensure_schema()
-    get_genai_client() # Validate API Key early
+    get_genai_client() 
 
     items = list(fetch_rss_items())
     items.extend(list(fetch_cisa_kev_items()))
@@ -213,6 +199,9 @@ def collect_all() -> None:
     for item in items:
         try:
             upsert_item(item)
+            # CRITICAL: Wait 15 seconds between items to respect free tier limits
+            logging.info("Sleeping 15s to avoid rate limit...")
+            time.sleep(15) 
         except Exception as exc:
             logging.error(f"Failed to process {item.get('url')}: {exc}")
 
