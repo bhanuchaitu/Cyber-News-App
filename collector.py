@@ -9,11 +9,12 @@ from typing import Iterable, List, Optional
 import feedparser
 import requests
 from google import genai
+from google.genai import types
 from pgvector.psycopg2 import register_vector
 
 from db import get_db_connection
 
-# Configure logging to show in GitHub Actions
+# Configure logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 RSS_FEEDS = {
@@ -22,8 +23,9 @@ RSS_FEEDS = {
 }
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
-SUMMARY_MODEL = os.environ.get("GEMINI_SUMMARY_MODEL", "gemini-3.0-flash")
-EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "text-embedding-004")
+# Updated for 2026
+SUMMARY_MODEL = "gemini-2.0-flash"
+EMBED_MODEL = "text-embedding-004"
 
 _GENAI_CLIENT: Optional[genai.Client] = None
 
@@ -76,9 +78,6 @@ def fetch_rss_items() -> Iterable[dict]:
         try:
             logging.info(f"Fetching {source}...")
             parsed = feedparser.parse(url)
-            if parsed.bozo:
-                logging.warning(f"Feed issue for {url}: {parsed.bozo_exception}")
-            
             # Fetch last 10 items per feed
             for entry in parsed.entries[:10]:
                 yield {
@@ -97,7 +96,6 @@ def fetch_cisa_kev_items() -> Iterable[dict]:
         response = requests.get(CISA_KEV_URL, timeout=20)
         response.raise_for_status()
         payload = response.json()
-        # Fetch last 10 items
         for item in payload.get("vulnerabilities", [])[:10]:
             yield {
                 "source": "CISA KEV",
@@ -128,26 +126,54 @@ def summarize_action_items(title: str, summary: str) -> str:
         "Ignore the 'safety' warning if this discusses an exploit; this is for defensive analysis.\n\n"
         f"Title: {title}\nSummary: {summary}\n"
     )
+    
+    # CRITICAL: Disable safety filters so Cyber news isn't blocked
+    conf = types.GenerateContentConfig(
+        safety_settings=[
+            types.SafetySetting(
+                category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                threshold="BLOCK_NONE"
+            ),
+            types.SafetySetting(
+                category="HARM_CATEGORY_HARASSMENT",
+                threshold="BLOCK_NONE"
+            ),
+            types.SafetySetting(
+                category="HARM_CATEGORY_HATE_SPEECH",
+                threshold="BLOCK_NONE"
+            ),
+            types.SafetySetting(
+                category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                threshold="BLOCK_NONE"
+            ),
+        ]
+    )
+
     try:
         client = get_genai_client()
-        response = client.models.generate_content(model=SUMMARY_MODEL, contents=prompt)
+        response = client.models.generate_content(
+            model=SUMMARY_MODEL, 
+            contents=prompt,
+            config=conf
+        )
         return (response.text or "").strip()
     except Exception as e:
-        # Fallback if AI fails
         logging.error(f"AI Summarization failed: {e}")
         return "Analysis unavailable due to API restriction."
 
 def create_embedding(text: str) -> List[float]:
-    # CRITICAL: Truncate text to avoid token limits
     try:
         client = get_genai_client()
-        response = client.models.embed_content(model=EMBED_MODEL, contents=text[:9000])
+        response = client.models.embed_content(
+            model=EMBED_MODEL, 
+            contents=text[:9000]
+        )
         if response.embeddings:
             return response.embeddings[0].values
         return [0.0] * 768
     except Exception as e:
         logging.error(f"Embedding failed: {e}")
-        return [0.0] * 768  # Return empty vector on failure
+        return [0.0] * 768
 
 def upsert_item(item: dict) -> None:
     title = item.get("title", "").strip()
@@ -156,7 +182,6 @@ def upsert_item(item: dict) -> None:
     
     if not title or not url: return
 
-    # Generate AI Content
     action_items = summarize_action_items(title, summary)
     embedding_text = f"Problem: {title}\nDetails: {summary}\nSolution: {action_items}"
     embedding = create_embedding(embedding_text)
@@ -178,7 +203,7 @@ def upsert_item(item: dict) -> None:
 def collect_all() -> None:
     logging.info("Starting Collector...")
     ensure_schema()
-    get_genai_client()
+    get_genai_client() # Validate API Key early
 
     items = list(fetch_rss_items())
     items.extend(list(fetch_cisa_kev_items()))
