@@ -25,11 +25,12 @@ def _get_secret_value(key: str) -> Optional[str]:
     return None
 
 
-def configure_genai() -> None:
+def configure_genai() -> bool:
     api_key = _get_secret_value("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY not set in environment or Streamlit secrets")
+        return False
     genai.configure(api_key=api_key)
+    return True
 
 
 def create_embedding(text: str) -> List[float]:
@@ -75,11 +76,17 @@ def search_briefs(query: str, limit: int = 20):
 st.title("Cyber-Daily Threat Intelligence")
 st.caption("Daily briefings generated from public sources with Blue Team action items.")
 
-configure_genai()
+ai_ready = configure_genai()
+if not ai_ready:
+    st.warning("GEMINI_API_KEY is not set. Search is disabled until the key is configured in Streamlit secrets or environment variables.")
 
-search_query = st.text_input("Search past vulnerabilities and fixes", "")
+search_query = st.text_input(
+    "Search past vulnerabilities and fixes",
+    "",
+    disabled=not ai_ready,
+)
 
-if search_query.strip():
+if ai_ready and search_query.strip():
     results = search_briefs(search_query.strip())
     st.subheader("Search Results")
 else:
