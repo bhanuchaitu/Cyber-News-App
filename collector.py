@@ -8,7 +8,7 @@ from typing import Iterable, List, Optional
 
 import feedparser
 import requests
-from google import genai
+import google.genai as genai
 from pgvector.psycopg2 import register_vector
 
 from db import get_db_connection
@@ -142,8 +142,11 @@ def create_embedding(text: str) -> List[float]:
     try:
         client = get_genai_client()
         response = client.models.embed_content(model=EMBED_MODEL, contents=text[:9000])
-        if response.embeddings:
-            return response.embeddings[0].values
+        values: Optional[List[float]] = None
+        if response.embeddings and response.embeddings[0].values:
+            values = list(response.embeddings[0].values)
+        if values:
+            return values
         return [0.0] * 768
     except Exception as e:
         logging.error(f"Embedding failed: {e}")
@@ -168,7 +171,13 @@ def upsert_item(item: dict) -> None:
                 """
                 INSERT INTO daily_brief (source, title, url, published_at, summary, action_items, embedding)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (url) DO NOTHING
+                ON CONFLICT (url) DO UPDATE
+                SET source = EXCLUDED.source,
+                    title = EXCLUDED.title,
+                    published_at = COALESCE(EXCLUDED.published_at, daily_brief.published_at),
+                    summary = EXCLUDED.summary,
+                    action_items = EXCLUDED.action_items,
+                    embedding = EXCLUDED.embedding
                 """,
                 (item.get("source"), title, url, published_at, summary, action_items, embedding),
             )

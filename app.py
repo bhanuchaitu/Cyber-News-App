@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-from google import genai
+import google.genai as genai
 import streamlit as st
 from pgvector.psycopg2 import register_vector
 
