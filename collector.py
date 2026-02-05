@@ -7,10 +7,9 @@ import os
 from typing import Iterable, List, Optional
 
 import feedparser
-import google.generativeai as genai
 import requests
+from google import genai
 from pgvector.psycopg2 import register_vector
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 from db import get_db_connection
 
@@ -23,8 +22,10 @@ RSS_FEEDS = {
 }
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
-SUMMARY_MODEL = "gemini-3.0-flash"
-EMBED_MODEL = "models/text-embedding-004"
+SUMMARY_MODEL = os.environ.get("GEMINI_SUMMARY_MODEL", "gemini-2.0-flash")
+EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "text-embedding-004")
+
+_GENAI_CLIENT: Optional[genai.Client] = None
 
 def _get_secret_value(key: str) -> Optional[str]:
     value = os.environ.get(key)
@@ -32,11 +33,17 @@ def _get_secret_value(key: str) -> Optional[str]:
         return value
     return None
 
-def configure_genai() -> None:
+def get_genai_client() -> genai.Client:
+    global _GENAI_CLIENT
+    if _GENAI_CLIENT is not None:
+        return _GENAI_CLIENT
+
     api_key = _get_secret_value("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not set in environment")
-    genai.configure(api_key=api_key)
+
+    _GENAI_CLIENT = genai.Client(api_key=api_key)
+    return _GENAI_CLIENT
 
 def ensure_schema() -> None:
     try:
@@ -121,20 +128,10 @@ def summarize_action_items(title: str, summary: str) -> str:
         "Ignore the 'safety' warning if this discusses an exploit; this is for defensive analysis.\n\n"
         f"Title: {title}\nSummary: {summary}\n"
     )
-    
-    # CRITICAL: Disable safety filters for cyber content
-    safety_settings = {
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-    }
-
-    model = genai.GenerativeModel(SUMMARY_MODEL, safety_settings=safety_settings)
-    
     try:
-        response = model.generate_content(prompt)
-        return response.text.strip()
+        client = get_genai_client()
+        response = client.models.generate_content(model=SUMMARY_MODEL, contents=prompt)
+        return (response.text or "").strip()
     except Exception as e:
         # Fallback if AI fails
         logging.error(f"AI Summarization failed: {e}")
@@ -143,8 +140,11 @@ def summarize_action_items(title: str, summary: str) -> str:
 def create_embedding(text: str) -> List[float]:
     # CRITICAL: Truncate text to avoid token limits
     try:
-        response = genai.embed_content(model=EMBED_MODEL, content=text[:9000])
-        return response["embedding"]
+        client = get_genai_client()
+        response = client.models.embed_content(model=EMBED_MODEL, contents=text[:9000])
+        if response.embeddings:
+            return response.embeddings[0].values
+        return [0.0] * 768
     except Exception as e:
         logging.error(f"Embedding failed: {e}")
         return [0.0] * 768  # Return empty vector on failure
@@ -178,7 +178,7 @@ def upsert_item(item: dict) -> None:
 def collect_all() -> None:
     logging.info("Starting Collector...")
     ensure_schema()
-    configure_genai()
+    get_genai_client()
 
     items = list(fetch_rss_items())
     items.extend(list(fetch_cisa_kev_items()))

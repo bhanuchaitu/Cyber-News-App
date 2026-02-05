@@ -3,14 +3,16 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-import google.generativeai as genai
+from google import genai
 import streamlit as st
 from pgvector.psycopg2 import register_vector
 
 from db import get_db_connection
 
-SUMMARY_MODEL = "gemini-1.5-flash"
-EMBED_MODEL = "models/embedding-001"
+SUMMARY_MODEL = os.environ.get("GEMINI_SUMMARY_MODEL", "gemini-2.0-flash")
+EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "text-embedding-004")
+
+_GENAI_CLIENT: Optional[genai.Client] = None
 
 
 st.set_page_config(page_title="Cyber-Daily", page_icon="🛡️", layout="wide")
@@ -25,17 +27,27 @@ def _get_secret_value(key: str) -> Optional[str]:
     return None
 
 
-def configure_genai() -> bool:
+def get_genai_client() -> Optional[genai.Client]:
+    global _GENAI_CLIENT
+    if _GENAI_CLIENT is not None:
+        return _GENAI_CLIENT
+
     api_key = _get_secret_value("GEMINI_API_KEY")
     if not api_key:
-        return False
-    genai.configure(api_key=api_key)
-    return True
+        return None
+
+    _GENAI_CLIENT = genai.Client(api_key=api_key)
+    return _GENAI_CLIENT
 
 
 def create_embedding(text: str) -> List[float]:
-    response = genai.embed_content(model=EMBED_MODEL, content=text)
-    return response["embedding"]
+    client = get_genai_client()
+    if not client:
+        return [0.0] * 768
+    response = client.models.embed_content(model=EMBED_MODEL, contents=text)
+    if response.embeddings:
+        return response.embeddings[0].values
+    return [0.0] * 768
 
 
 @st.cache_data(ttl=300)
@@ -76,7 +88,7 @@ def search_briefs(query: str, limit: int = 20):
 st.title("Cyber-Daily Threat Intelligence")
 st.caption("Daily briefings generated from public sources with Blue Team action items.")
 
-ai_ready = configure_genai()
+ai_ready = get_genai_client() is not None
 if not ai_ready:
     st.warning("GEMINI_API_KEY is not set. Search is disabled until the key is configured in Streamlit secrets or environment variables.")
 
