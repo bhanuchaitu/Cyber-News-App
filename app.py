@@ -10,7 +10,7 @@ from pgvector.psycopg2 import register_vector
 from db import get_db_connection
 
 SUMMARY_MODEL = os.environ.get("GEMINI_SUMMARY_MODEL", "gemini-2.0-flash")
-EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "embedding-001")
+EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "text-embedding-004")
 
 _GENAI_CLIENT: Optional[genai.Client] = None
 
