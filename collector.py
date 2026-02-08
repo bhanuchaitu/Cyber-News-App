@@ -24,9 +24,9 @@ RSS_FEEDS = {
 }
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
-# UPDATED: Correct model names for 2026
+# UPDATED: Explicit prefix to fix 404 errors
 SUMMARY_MODEL = "gemini-2.0-flash"
-EMBED_MODEL = "text-embedding-004"
+EMBED_MODEL = "models/text-embedding-004"
 
 _GENAI_CLIENT: Optional[genai.Client] = None
 
@@ -136,22 +136,32 @@ def summarize_action_items(title: str, summary: str) -> str:
         ]
     )
 
-    try:
-        client = get_genai_client()
-        response = client.models.generate_content(
-            model=SUMMARY_MODEL, 
-            contents=prompt,
-            config=conf
-        )
-        return (response.text or "").strip()
-    except Exception as e:
-        # Log error but return generic text to allow process to continue
-        logging.error(f"AI Summarization failed: {e}")
-        return "Analysis unavailable due to API restriction."
+    client = get_genai_client()
+    
+    # Retry logic for 429 Errors
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=SUMMARY_MODEL, 
+                contents=prompt,
+                config=conf
+            )
+            return (response.text or "").strip()
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                wait_time = 20 * (attempt + 1)
+                logging.warning(f"Quota hit (429). Waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+            else:
+                logging.error(f"AI Summarization failed: {e}")
+                return "Analysis unavailable due to API restriction."
+    
+    return "Analysis unavailable due to Quota Limits."
 
 def create_embedding(text: str) -> List[float]:
     try:
         client = get_genai_client()
+        # Use explicit model name with prefix
         response = client.models.embed_content(
             model=EMBED_MODEL, 
             contents=text[:9000]
@@ -203,9 +213,9 @@ def collect_all() -> None:
     for item in items:
         try:
             upsert_item(item)
-            # CRITICAL FIX: Sleep 60s to respect free tier rate limit
-            logging.info("Sleeping 60s to avoid rate limit...")
-            time.sleep(60) 
+            # Sleep 10s between successful items to be nice to the API
+            logging.info("Sleeping 10s...")
+            time.sleep(10)
         except Exception as exc:
             logging.error(f"Failed to process {item.get('url')}: {exc}")
 
