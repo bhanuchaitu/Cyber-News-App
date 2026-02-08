@@ -4,12 +4,12 @@ import datetime as dt
 import json
 import logging
 import os
-import time  # <--- Added this
+import time
 from typing import Iterable, List, Optional
 
 import feedparser
 import requests
-import google.genai as genai
+from google import genai
 from google.genai import types
 from pgvector.psycopg2 import register_vector
 
@@ -24,8 +24,9 @@ RSS_FEEDS = {
 }
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
-SUMMARY_MODEL = os.environ.get("GEMINI_SUMMARY_MODEL", "gemini-2.0-flash")
-EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "embedding-001")
+# UPDATED: Correct model names for 2026
+SUMMARY_MODEL = "gemini-2.0-flash"
+EMBED_MODEL = "text-embedding-004"
 
 _GENAI_CLIENT: Optional[genai.Client] = None
 
@@ -78,7 +79,7 @@ def fetch_rss_items() -> Iterable[dict]:
         try:
             logging.info(f"Fetching {source}...")
             parsed = feedparser.parse(url)
-            for entry in parsed.entries[:5]: # Reduced to 5 per feed to save quota
+            for entry in parsed.entries[:5]: 
                 yield {
                     "source": source,
                     "title": entry.get("title", ""),
@@ -95,7 +96,7 @@ def fetch_cisa_kev_items() -> Iterable[dict]:
         response = requests.get(CISA_KEV_URL, timeout=20)
         response.raise_for_status()
         payload = response.json()
-        for item in payload.get("vulnerabilities", [])[:5]: # Reduced to 5
+        for item in payload.get("vulnerabilities", [])[:5]: 
             yield {
                 "source": "CISA KEV",
                 "title": f"{item.get('cveID', '')} - {item.get('vulnerabilityName', '')}",
@@ -128,22 +129,10 @@ def summarize_action_items(title: str, summary: str) -> str:
     
     conf = types.GenerateContentConfig(
         safety_settings=[
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold=types.HarmBlockThreshold.BLOCK_NONE,
-            ),
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                threshold=types.HarmBlockThreshold.BLOCK_NONE,
-            ),
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                threshold=types.HarmBlockThreshold.BLOCK_NONE,
-            ),
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                threshold=types.HarmBlockThreshold.BLOCK_NONE,
-            ),
+            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
         ]
     )
 
@@ -156,29 +145,22 @@ def summarize_action_items(title: str, summary: str) -> str:
         )
         return (response.text or "").strip()
     except Exception as e:
-        error_msg = str(e)
-        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            logging.error(f"AI Summarization quota exceeded. Using fallback.")
-            return "[Quota Exceeded] Blue Team: Monitor this threat, review indicators, update detection rules."
+        # Log error but return generic text to allow process to continue
         logging.error(f"AI Summarization failed: {e}")
-        return "Analysis unavailable due to API error."
+        return "Analysis unavailable due to API restriction."
 
 def create_embedding(text: str) -> List[float]:
     try:
         client = get_genai_client()
         response = client.models.embed_content(
-            model=EMBED_MODEL,
+            model=EMBED_MODEL, 
             contents=text[:9000]
         )
-        values: Optional[List[float]] = None
-        if response.embeddings and response.embeddings[0].values:
-            values = list(response.embeddings[0].values)
-        if values:
-            return values
+        if response.embeddings:
+            return response.embeddings[0].values
         return [0.0] * 768
     except Exception as e:
         logging.error(f"Embedding failed: {e}")
-        # Return zero vector on failure to allow processing to continue
         return [0.0] * 768
 
 def upsert_item(item: dict) -> None:
@@ -200,11 +182,7 @@ def upsert_item(item: dict) -> None:
                 INSERT INTO daily_brief (source, title, url, published_at, summary, action_items, embedding)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (url) DO UPDATE
-                SET source = EXCLUDED.source,
-                    title = EXCLUDED.title,
-                    published_at = COALESCE(EXCLUDED.published_at, daily_brief.published_at),
-                    summary = EXCLUDED.summary,
-                    action_items = EXCLUDED.action_items,
+                SET action_items = EXCLUDED.action_items,
                     embedding = EXCLUDED.embedding
                 """,
                 (item.get("source"), title, url, published_at, summary, action_items, embedding),
@@ -225,9 +203,9 @@ def collect_all() -> None:
     for item in items:
         try:
             upsert_item(item)
-            # Wait between items to respect free tier rate limits
-            logging.info("Sleeping 15s to avoid rate limit...")
-            time.sleep(15) 
+            # CRITICAL FIX: Sleep 60s to respect free tier rate limit
+            logging.info("Sleeping 60s to avoid rate limit...")
+            time.sleep(60) 
         except Exception as exc:
             logging.error(f"Failed to process {item.get('url')}: {exc}")
 
