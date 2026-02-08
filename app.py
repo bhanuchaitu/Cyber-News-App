@@ -10,7 +10,7 @@ from pgvector.psycopg2 import register_vector
 from db import get_db_connection
 
 SUMMARY_MODEL = os.environ.get("GEMINI_SUMMARY_MODEL", "gemini-2.0-flash")
-EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "text-embedding-004")
+EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "embedding-001")
 
 _GENAI_CLIENT: Optional[genai.Client] = None
 
@@ -44,14 +44,20 @@ def create_embedding(text: str) -> List[float]:
     client = get_genai_client()
     if not client:
         return [0.0] * 768
-    # Update: Add [:9000] to match collector.py safety
-    response = client.models.embed_content(model=EMBED_MODEL, contents=text[:9000])
-    values: Optional[List[float]] = None
-    if response.embeddings and response.embeddings[0].values:
-        values = list(response.embeddings[0].values)
-    if values:
-        return values
-    return [0.0] * 768
+    try:
+        response = client.models.embed_content(
+            model=EMBED_MODEL,
+            contents=text[:9000]
+        )
+        values: Optional[List[float]] = None
+        if response.embeddings and response.embeddings[0].values:
+            values = list(response.embeddings[0].values)
+        if values:
+            return values
+        return [0.0] * 768
+    except Exception as e:
+        st.error(f"Embedding error: {str(e)[:100]}")
+        return [0.0] * 768
 
 
 @st.cache_data(ttl=300)

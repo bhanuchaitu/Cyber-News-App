@@ -25,7 +25,7 @@ RSS_FEEDS = {
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
 SUMMARY_MODEL = os.environ.get("GEMINI_SUMMARY_MODEL", "gemini-2.0-flash")
-EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "text-embedding-004")
+EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "embedding-001")
 
 _GENAI_CLIENT: Optional[genai.Client] = None
 
@@ -156,13 +156,20 @@ def summarize_action_items(title: str, summary: str) -> str:
         )
         return (response.text or "").strip()
     except Exception as e:
+        error_msg = str(e)
+        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+            logging.error(f"AI Summarization quota exceeded. Using fallback.")
+            return "[Quota Exceeded] Blue Team: Monitor this threat, review indicators, update detection rules."
         logging.error(f"AI Summarization failed: {e}")
-        return "Analysis unavailable due to API restriction."
+        return "Analysis unavailable due to API error."
 
 def create_embedding(text: str) -> List[float]:
     try:
         client = get_genai_client()
-        response = client.models.embed_content(model=EMBED_MODEL, contents=text[:9000])
+        response = client.models.embed_content(
+            model=EMBED_MODEL,
+            contents=text[:9000]
+        )
         values: Optional[List[float]] = None
         if response.embeddings and response.embeddings[0].values:
             values = list(response.embeddings[0].values)
@@ -171,6 +178,7 @@ def create_embedding(text: str) -> List[float]:
         return [0.0] * 768
     except Exception as e:
         logging.error(f"Embedding failed: {e}")
+        # Return zero vector on failure to allow processing to continue
         return [0.0] * 768
 
 def upsert_item(item: dict) -> None:
@@ -217,9 +225,9 @@ def collect_all() -> None:
     for item in items:
         try:
             upsert_item(item)
-            # CRITICAL: Wait 15 seconds between items to respect free tier limits
+            # Wait between items to respect free tier rate limits
             logging.info("Sleeping 15s to avoid rate limit...")
-            time.sleep(60) 
+            time.sleep(15) 
         except Exception as exc:
             logging.error(f"Failed to process {item.get('url')}: {exc}")
 
