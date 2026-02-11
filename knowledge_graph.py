@@ -95,7 +95,17 @@ class KnowledgeGraphManager:
                 ioc_count += 1
         
         for hash_val in entities['iocs']['hashes']:
-            hash_type = f"hash_sha{len(hash_val) // 8}"  # sha256=64, md5=32, sha1=40
+            # Map hash length to type: 64=SHA256, 40=SHA1, 32=MD5
+            hash_length = len(hash_val)
+            if hash_length == 64:
+                hash_type = "hash_sha256"
+            elif hash_length == 40:
+                hash_type = "hash_sha1"
+            elif hash_length == 32:
+                hash_type = "hash_md5"
+            else:
+                hash_type = "hash_unknown"
+            
             if self._store_ioc(hash_type, hash_val, article_id):
                 ioc_count += 1
         
@@ -362,7 +372,7 @@ class KnowledgeGraphManager:
             
             # Filter by type if specified
             if topic_type:
-                query_builder = query_builder.eq('topic_type', topic_type)
+                query_builder = query_builder.eq('type', topic_type)
             
             result = query_builder.order('article_count', desc=True).limit(limit).execute()
             
@@ -397,11 +407,23 @@ class KnowledgeGraphManager:
             print(f"Error getting topic with articles: {e}")
             return None
     
-    def get_topic_relationships(self, topic_slug: str) -> Dict:
-        """Get all relationships for a topic"""
+    def get_topic_relationships(self, topic_identifier: str) -> Dict:
+        """Get all relationships for a topic (by slug or ID)
+        Args:
+            topic_identifier: Topic slug (string) or ID (integer/string of digits)
+        """
         try:
-            # Get topic ID
-            topic_result = self.supabase.table('topics').select('id').eq('slug', topic_slug).execute()
+            # Validate topic_identifier
+            if topic_identifier is None or (isinstance(topic_identifier, str) and not topic_identifier.strip()):
+                return {}
+            
+            # Detect if identifier is an ID (integer or string of digits)
+            if isinstance(topic_identifier, int) or (isinstance(topic_identifier, str) and topic_identifier.isdigit()):
+                # Query by ID
+                topic_result = self.supabase.table('topics').select('id').eq('id', int(topic_identifier)).execute()
+            else:
+                # Query by slug
+                topic_result = self.supabase.table('topics').select('id').eq('slug', topic_identifier).execute()
             
             if not topic_result.data or not isinstance(topic_result.data, list) or len(topic_result.data) == 0:
                 return {}
@@ -414,14 +436,14 @@ class KnowledgeGraphManager:
             
             # Get outgoing relationships (this topic -> targets)
             outgoing = self.supabase.table('topic_relationships')\
-                .select('relationship_type,strength,evidence_count,target_topic:target_topic_id(slug,name,topic_type)')\
+                .select('relationship_type,strength,evidence_count,target_topic:target_topic_id(slug,name,type)')\
                 .eq('source_topic_id', topic_id)\
                 .order('strength', desc=True)\
                 .execute()
             
             # Get incoming relationships (sources -> this topic)
             incoming = self.supabase.table('topic_relationships')\
-                .select('relationship_type,strength,evidence_count,source_topic:source_topic_id(slug,name,topic_type)')\
+                .select('relationship_type,strength,evidence_count,source_topic:source_topic_id(slug,name,type)')\
                 .eq('target_topic_id', topic_id)\
                 .order('strength', desc=True)\
                 .execute()

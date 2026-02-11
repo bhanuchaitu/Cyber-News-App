@@ -4,7 +4,7 @@ Optimized for 20-30 second scanning and rapid decision-making
 """
 
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from supabase import create_client
 import os
 from dotenv import load_dotenv
@@ -599,6 +599,9 @@ def fetch_intelligence(
     if not show_reviewed:
         query = query.is_("reviewed_at", "null")
     
+    # Apply time range filter (using published_at - when article was published)
+    now = datetime.now(timezone.utc)
+    
     # Apply Delta View filter (What Changed Since Yesterday?)
     if view_mode == "What Changed Since Yesterday?":
         # Get last review timestamp from session state or default to 24 hours ago
@@ -620,10 +623,6 @@ def fetch_intelligence(
     # Apply Unreviewed Only filter
     if view_mode == "Unreviewed Only":
         query = query.is_("last_analyst_review", "null")
-    
-    # Apply time range filter (using published_at - when article was published)
-    from datetime import datetime, timedelta, timezone
-    now = datetime.now(timezone.utc)
     
     if time_range == "Today":
         start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)

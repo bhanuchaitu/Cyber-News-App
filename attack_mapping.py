@@ -175,6 +175,6 @@ def extract_attack_name(title: str, content: str) -> str | None:
     for attack_name, keywords in {**apt_groups, **ransomware, **malware}.items():
         for keyword in keywords:
             if keyword in text:
-                return attack_name.upper().replace(' ', ' ')
+                return attack_name.upper().replace(' ', '_')
     
     return None

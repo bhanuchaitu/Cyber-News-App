@@ -160,9 +160,9 @@ def get_time_category(timestamp: Union[str, datetime]) -> str:
         elif days == 1:
             return '1 day ago'
         elif days <= 7:
-            return f'{days} days ago'
+            return 'This week'
         elif days <= 30:
-            return 'This week' if days <= 7 else 'This month'
+            return 'This month'
         else:
             return 'Older'
     except (TypeError, ValueError):

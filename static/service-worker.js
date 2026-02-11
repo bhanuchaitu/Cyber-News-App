@@ -56,11 +56,9 @@ self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys().then(cacheNames => {
       return Promise.all(
-        cacheNames.map(cacheName => {
-          if (cacheWhitelist.indexOf(cacheName) === -1) {
-            return caches.delete(cacheName);
-          }
-        })
+        cacheNames
+          .filter(cacheName => cacheWhitelist.indexOf(cacheName) === -1)
+          .map(cacheName => caches.delete(cacheName))
       );
     })
   );

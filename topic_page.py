@@ -295,9 +295,33 @@ def render_topic_iocs(kg_manager: KnowledgeGraphManager, topic_id: int, topic_na
         iocs = result.data if result.data else []
     except Exception:
         # Fallback: get all IOCs and filter manually (less efficient but works)
-        st.info("Advanced IOC filtering not available. Showing all IOCs.")
+        st.info("Advanced IOC filtering not available. Showing related IOCs from all articles.")
         all_iocs = kg_manager.export_iocs()
-        iocs = all_iocs  # In production, you'd filter by related articles
+        
+        # Try to filter by topic - check if IOC is from an article mentioning this topic
+        # This is a basic filter; ideally the RPC function should work
+        topic_name_lower = topic_name.lower()
+        
+        def match_tags(tags_value):
+            """Check if topic_name appears in tags (handles list or string)"""
+            if isinstance(tags_value, (list, tuple)):
+                return any(topic_name_lower in str(tag).lower() for tag in tags_value)
+            elif tags_value:
+                return topic_name_lower in str(tags_value).lower()
+            return False
+        
+        iocs = [
+            ioc for ioc in all_iocs 
+            if isinstance(ioc, dict) and (
+                topic_name_lower in str(ioc.get('article_title', '')).lower() or
+                match_tags(ioc.get('tags'))
+            )
+        ]
+        
+        # If filtering yields nothing, show all IOCs with disclaimer
+        if not iocs:
+            st.warning(f"No IOCs directly linked to {topic_name}. Showing all extracted IOCs (unfiltered).")
+            iocs = all_iocs
     
     # Type guard: ensure iocs is a list
     if not isinstance(iocs, list):

@@ -101,8 +101,6 @@ A **comprehensive three-phase Personal MDR Threat Intelligence Platform** that:
 
 ### Core Modules
 
-### Core Modules
-
 #### Phase 1: Intelligence Processing
 
 1. **`mdr_intelligence.py`** (560 lines) - Intelligence processing engine

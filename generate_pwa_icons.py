@@ -39,12 +39,27 @@ def create_pwa_icons():
         )
         
         # Add emoji/text in center
-        try:
-            # Try to use system font
-            font_size = size // 3
-            font = ImageFont.truetype("arial.ttf", font_size)
-        except Exception:
-            # Fallback to default font
+        font_size = size // 3
+        font = None
+        
+        # Try cross-platform fonts in order of preference
+        font_candidates = [
+            "DejaVuSans.ttf",           # Linux/many systems
+            "Arial.ttf",                # Windows
+            "LiberationSans-Regular.ttf",  # Linux
+            "/System/Library/Fonts/Helvetica.ttc",  # macOS
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Linux explicit path
+        ]
+        
+        for font_path in font_candidates:
+            try:
+                font = ImageFont.truetype(font_path, font_size)
+                break
+            except Exception:
+                continue
+        
+        # Final fallback to default font
+        if font is None:
             font = ImageFont.load_default()
         
         # Draw MDR text in center

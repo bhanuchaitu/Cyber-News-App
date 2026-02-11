@@ -94,7 +94,6 @@ class EntityExtractor:
             'moses-staff': ['moses staff'],
             
             # Nation-State APTs - Middle East
-            'apt28': ['apt28', 'apt 28'],
             'molerats': ['molerats', 'gaza cybergang'],
             
             # FIN Groups
@@ -180,7 +179,6 @@ class EntityExtractor:
             
             # Cloud Platforms
             'aws': ['aws', 'amazon web services'],
-            'azure': ['azure', 'microsoft azure'],
             'gcp': ['gcp', 'google cloud', 'google cloud platform'],
             
             # Container/Orchestration

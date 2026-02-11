@@ -111,19 +111,52 @@ def enrich_cve_from_nvd(cve_id: str) -> Dict:
     return {'cve_id': cve_id, 'cvss_score': None, 'cvss_vector': None, 'cve_published_date': None}
 
 
+# KEV cache variables
+KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+_cached_kev = None
+_kev_fetched_at = None
+_kev_session = requests.Session()
+
 def check_cisa_kev(cve_id: str) -> bool:
-    """Check if CVE is in CISA Known Exploited Vulnerabilities catalog"""
-    try:
-        url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-        response = requests.get(url, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            return any(vuln['cveID'] == cve_id for vuln in data.get('vulnerabilities', []))
-    except Exception:
-        pass
+    """Check if CVE is in CISA Known Exploited Vulnerabilities catalog (with 1-hour cache)"""
+    global _cached_kev, _kev_fetched_at
     
-    return False
+    try:
+        now = datetime.now(timezone.utc)
+        cache_ttl = timedelta(hours=1)
+        
+        # Check if cache needs refresh
+        if _cached_kev is None or _kev_fetched_at is None or (now - _kev_fetched_at) > cache_ttl:
+            response = _kev_session.get(KEV_URL, timeout=10)
+            
+            if response.status_code != 200:
+                print(f"KEV fetch failed with status {response.status_code}")
+                # Fall back to cached data if available
+                if _cached_kev is not None:
+                    print(f"Using stale KEV cache (last fetched: {_kev_fetched_at})")
+                else:
+                    return False
+            else:
+                try:
+                    data = response.json()
+                    _cached_kev = data.get('vulnerabilities', [])
+                    _kev_fetched_at = now
+                except ValueError as e:
+                    print(f"KEV JSON parse error: {e}")
+                    # Fall back to cached data if available
+                    if _cached_kev is not None:
+                        print(f"Using stale KEV cache (last fetched: {_kev_fetched_at})")
+                    else:
+                        return False
+        
+        # Return False if no cache is available
+        if _cached_kev is None:
+            return False
+        
+        return any(vuln['cveID'] == cve_id for vuln in _cached_kev)
+    except Exception as e:
+        print(f"KEV check error for {cve_id}: {e}")
+        return False
 
 
 def calculate_weaponization_speed(cve_published_date: Optional[str], article_date: datetime) -> Optional[int]:
@@ -135,7 +168,8 @@ def calculate_weaponization_speed(cve_published_date: Optional[str], article_dat
         published = datetime.fromisoformat(cve_published_date)
         delta = article_date - published.replace(tzinfo=timezone.utc)
         return max(0, delta.days)
-    except:
+    except Exception as e:
+        print(f"Weaponization speed calculation error: {e}")
         return None
 
 

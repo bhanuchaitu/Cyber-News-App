@@ -28,7 +28,7 @@ CREATE INDEX idx_topics_slug ON topics(slug);
 CREATE INDEX idx_topics_type ON topics(type);
 CREATE INDEX idx_topics_article_count ON topics(article_count DESC);
 CREATE INDEX idx_topics_last_seen ON topics(last_seen DESC);
-CREATE INDEX idx_topics_embedding ON topics USING ivfflat (embedding vector_cosine_ops);
+CREATE INDEX idx_topics_embedding ON topics USING hnsw (embedding vector_cosine_ops);
 
 -- ============================================================
 -- TABLE 2: topic_relationships - Knowledge graph edges

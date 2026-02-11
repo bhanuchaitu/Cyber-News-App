@@ -162,8 +162,11 @@ SLOW            |    21 |    28.4
    ```sql
    UPDATE daily_brief
    SET exploitation_status = 'poc_available'
-   WHERE exploitation_status = 'actively_exploited'
-   LIMIT 1
+   WHERE id IN (
+     SELECT id FROM daily_brief
+     WHERE exploitation_status = 'actively_exploited'
+     LIMIT 1
+   )
    RETURNING id, title, url;
    ```
    

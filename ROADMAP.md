@@ -244,35 +244,11 @@ if view_mode == "What Changed Since Yesterday?":
 **Status:** ✅ **Shipped** (Feb 11, 2026)  
 **Solution:** Already implemented - see "Recently Implemented Features" above
 
-**Status:** ⚠️ **In Progress** (Schema Ready, UI Pending)  
-**Problem:** Analysts re-read the same stories daily, wasting time  
-**Impact:** 5-10 minutes of wasted review time per day  
-
-**What to Build:**
-- "New since last review" filter toggle
-- Highlight items with status changes
-- Show exploitation escalations (🟡 PoC → 🔴 Active)
-- Show signal strength upgrades
-- Track last review timestamp per analyst
-
-**Implementation:**
-```python
-# Add to fetch_intelligence()
-if show_delta:
-    query = query.gt('updated_at', last_review_time)
-    # OR flag items with exploitation_escalated_at > last_review_time
-```
-
-**Database Changes:**
-```sql
-ALTER TABLE daily_brief 
-ADD COLUMN last_analyst_review TIMESTAMPTZ;
-
-CREATE INDEX idx_delta_review 
-ON daily_brief(updated_at, last_analyst_review);
-```
-
-**UI Location:** Sidebar toggle "Show Only New/Changed"
+**Implementation Notes:**
+- Session-based last review timestamp tracking
+- Filters items by created_at, exploitation_escalated_at, and signal_upgraded_at
+- Visual time indicator showing hours since last review
+- Available in sidebar: View Mode → "What Changed Since Yesterday?"
 
 ---
 
