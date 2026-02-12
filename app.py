@@ -3,8 +3,14 @@ Streamlit Cloud Entry Point
 Redirects to the main MDR Intelligence Dashboard
 """
 
-# Import and run the main application
-import app_mdr
+import sys
+import traceback
 
-# The app_mdr.py module runs automatically when imported
-# since it contains the main Streamlit code at the module level
+try:
+    # Import and run the main application
+    import app_mdr
+except Exception as e:
+    import streamlit as st
+    st.error(f"Failed to load app_mdr.py: {str(e)}")
+    st.code(traceback.format_exc())
+    st.stop()

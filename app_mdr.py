@@ -395,12 +395,34 @@ st.markdown("""
 
 @st.cache_resource
 def init_supabase():
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY")
+    # Try Streamlit Cloud secrets first, then fall back to .env
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+    except (KeyError, FileNotFoundError):
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_KEY")
 
     if not url or not key:
-        raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY")
-
+        st.error("⚠️ Missing Supabase credentials!")
+        st.info("""
+        **For Streamlit Cloud:**
+        1. Go to App Settings → Secrets
+        2. Add:
+        ```toml
+        SUPABASE_URL = "https://your-project.supabase.co"
+        SUPABASE_KEY = "your-anon-key"
+        ```
+        
+        **For Local Development:**
+        Create a `.env` file with:
+        ```
+        SUPABASE_URL=https://your-project.supabase.co
+        SUPABASE_KEY=your-anon-key
+        ```
+        """)
+        st.stop()
+        
     return create_client(url, key)
 
 @st.cache_resource
