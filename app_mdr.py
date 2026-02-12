@@ -401,10 +401,15 @@ def init_supabase():
 @st.cache_resource
 def init_embedding_model():
     """Initialize sentence-transformers model (cached, loads once)"""
-    return SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+    try:
+        return SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+    except Exception as e:
+        st.error(f"⚠️ Failed to load AI model: {str(e)}")
+        return None
 
 supabase = init_supabase()
-embed_model = init_embedding_model()
+# Don't initialize embedding model on load - only when needed for semantic search
+embed_model = None
 
 # =========================================================
 # HEADER
@@ -476,48 +481,59 @@ if search_query:
     with st.sidebar:
         with st.spinner("🧠 Searching..."):
             try:
-                # Generate embedding for search query
-                query_embedding = embed_model.encode(search_query).tolist()
+                # Initialize embedding model only when needed (lazy loading)
+                if embed_model is None:
+                    embed_model = init_embedding_model()
                 
-                # Call database RPC function
-                search_results = supabase.rpc(
-                    'search_similar_items',
-                    {
-                        'query_embedding': query_embedding,
-                        'match_count': 5
-                    }
-                ).execute()
-                
-                if search_results.data and len(search_results.data) > 0:
-                    st.markdown("**🎯 Top Matches:**")
-                    for result in search_results.data:
-                        similarity_pct = int(result['similarity'] * 100)
-                        
-                        # Color code by similarity
-                        if similarity_pct >= 70:
-                            color = '🟢'
-                        elif similarity_pct >= 50:
-                            color = '🟡'
-                        else:
-                            color = '🔵'
-                        
-                        # Create clickable link to topic
-                        if st.button(
-                            f"{color} {result['name']} ({similarity_pct}%)",
-                            key=f"search_{result['id']}",
-                            help=f"Type: {result['type']}\nSimilarity: {similarity_pct}%"
-                        ):
-                            st.session_state.viewing_topic = result['id']
-                            st.rerun()
-                    
-                    st.markdown("---")
-                    st.caption(f"💡 Found {len(search_results.data)} similar topics")
+                if embed_model is None:
+                    st.error("⚠️ AI model failed to load. Semantic search unavailable.")
+                    st.info("💡 Try using filters instead or check torch installation.")
                 else:
-                    st.info("No similar topics found. Try different keywords.")
+                    # Generate embedding for search query
+                    query_embedding = embed_model.encode(search_query).tolist()
+                    
+                    # Call database RPC function
+                    search_results = supabase.rpc(
+                        'search_similar_items',
+                        {
+                            'query_embedding': query_embedding,
+                            'match_count': 5
+                        }
+                    ).execute()
+                    
+                    if search_results.data and len(search_results.data) > 0:
+                        st.markdown("**🎯 Top Matches:**")
+                        for result in search_results.data:
+                            similarity_pct = int(result['similarity'] * 100)
+                            
+                            # Color code by similarity
+                            if similarity_pct >= 70:
+                                color = '🟢'
+                            elif similarity_pct >= 50:
+                                color = '🟡'
+                            else:
+                                color = '🔵'
+                            
+                            # Create clickable link to topic
+                            if st.button(
+                                f"{color} {result['name']} ({similarity_pct}%)",
+                                key=f"search_{result['id']}",
+                                help=f"Type: {result['type']}\nSimilarity: {similarity_pct}%"
+                            ):
+                                st.session_state.viewing_topic = result['id']
+                                st.rerun()
+                        
+                        st.markdown("---")
+                        st.caption(f"💡 Found {len(search_results.data)} similar topics")
+                    else:
+                        st.info("No similar topics found. Try different keywords.")
             
             except Exception as e:
                 st.error(f"Search error: {str(e)}")
                 st.caption("💡 Ensure search_similar_items() function exists in database")
+                import traceback
+                with st.expander("🔧 Error Details"):
+                    st.code(traceback.format_exc())
 
 st.sidebar.markdown("---")
 
