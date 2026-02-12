@@ -9,8 +9,8 @@ jobs:
   run-collector:
     runs-on: ubuntu-latest
     env:
-      DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
