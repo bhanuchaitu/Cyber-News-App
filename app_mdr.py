@@ -9,6 +9,7 @@ from supabase import create_client
 import os
 from dotenv import load_dotenv
 import html
+import streamlit.components.v1 as components
 from knowledge_graph import KnowledgeGraphManager
 from knowledge_dashboard import render_knowledge_dashboard
 from date_utils import format_ist_datetime
@@ -341,53 +342,25 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# PWA META TAGS & SERVICE WORKER
+# PWA SERVICE WORKER (Hidden Component)
 # =========================================================
 
-st.markdown("""
-<head>
-    <!-- PWA Manifest -->
-    <link rel="manifest" href="/static/manifest.json">
-    
-    <!-- Apple PWA Support -->
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="MDR Intel">
-    <link rel="apple-touch-icon" href="/static/icon-192.png">
-    
-    <!-- Android PWA Support -->
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="theme-color" content="#ff4444">
-    
-    <!-- Viewport for mobile -->
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes">
-    
-    <!-- Service Worker Registration -->
-    <script>
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', function() {
-                navigator.serviceWorker.register('/static/service-worker.js')
-                    .then(function(registration) {
-                        console.log('ServiceWorker registered:', registration.scope);
-                    })
-                    .catch(function(error) {
-                        console.log('ServiceWorker registration failed:', error);
-                    });
-            });
-        }
-        
-        // iOS standalone mode detection
-        if (('standalone' in window.navigator) && window.navigator.standalone) {
-            console.log('Running as PWA on iOS');
-        }
-        
-        // Android standalone mode detection
-        if (window.matchMedia('(display-mode: standalone)').matches) {
-            console.log('Running as PWA on Android');
-        }
-    </script>
-</head>
-""", unsafe_allow_html=True)
+# Register service worker for PWA support (hidden, no visible output)
+components.html("""
+<script>
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+            navigator.serviceWorker.register('/static/service-worker.js')
+                .then(function(registration) {
+                    console.log('ServiceWorker registered:', registration.scope);
+                })
+                .catch(function(error) {
+                    console.log('ServiceWorker registration failed:', error);
+                });
+        });
+    }
+</script>
+""", height=0)
 
 # =========================================================
 # DATABASE CONNECTION
@@ -580,6 +553,15 @@ if 'viewing_topic' in st.session_state and st.session_state.viewing_topic:
 # FETCH DATA
 # =========================================================
 
+# Debug: Show filter status
+with st.expander("🔧 Debug Info"):
+    st.write(f"**View Mode:** {view_mode}")
+    st.write(f"**Signal Filter:** {signal_filter} (count: {len(signal_filter) if signal_filter else 0})")
+    st.write(f"**Exploit Filter:** {exploit_filter} (count: {len(exploit_filter) if exploit_filter else 0})")
+    st.write(f"**Time Range:** {time_range}")
+    st.write(f"**Source Confidence:**  {source_confidence_filter} (count: {len(source_confidence_filter) if source_confidence_filter else 0})")
+    st.write(f"**Show Reviewed:** {show_reviewed}")
+
 def fetch_intelligence(
     signal_filter=None,
     exploit_filter=None,
@@ -602,76 +584,92 @@ def fetch_intelligence(
     Returns:
         List of filtered intelligence items
     """
-    # Start with base query
-    query = supabase.table("daily_brief").select("*")
-    
-    # Apply signal strength filter
-    if signal_filter and len(signal_filter) > 0:
-        query = query.in_("signal_strength", signal_filter)
-    
-    # Apply exploitation status filter
-    if exploit_filter and len(exploit_filter) > 0:
-        query = query.in_("exploitation_status", exploit_filter)
-    
-    # Apply source confidence filter
-    if source_confidence_filter and len(source_confidence_filter) > 0:
-        query = query.in_("source_confidence", source_confidence_filter)
-    
-    # Apply reviewed filter
-    if not show_reviewed:
-        query = query.is_("reviewed_at", "null")
-    
-    # Apply time range filter (using published_at - when article was published)
-    now = datetime.now(timezone.utc)
-    
-    # Apply Delta View filter (What Changed Since Yesterday?)
-    if view_mode == "What Changed Since Yesterday?":
-        # Get last review timestamp from session state or default to 24 hours ago
-        if 'last_review_time' not in st.session_state:
-            st.session_state.last_review_time = (now - timedelta(days=1)).isoformat()
+    try:
+        # Start with base query
+        query = supabase.table("daily_brief").select("*")
         
-        last_review = st.session_state.last_review_time
+        # Apply signal strength filter (only if not empty)
+        if signal_filter and len(signal_filter) > 0:
+            query = query.in_("signal_strength", signal_filter)
         
-        # Filter items that:
-        # 1. Are new (created after last review), OR
-        # 2. Had exploitation escalation, OR
-        # 3. Had signal strength upgrade
-        query = query.or_(
-            f"created_at.gt.{last_review},"
-            f"exploitation_escalated_at.gt.{last_review},"
-            f"signal_upgraded_at.gt.{last_review}"
-        )
-    
-    # Apply Unreviewed Only filter
-    if view_mode == "Unreviewed Only":
-        query = query.is_("last_analyst_review", "null")
-    
-    if time_range == "Today":
-        start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999)
-        query = query.gte("published_at", start_date.isoformat()).lte("published_at", end_date.isoformat())
-    elif time_range == "Last 3 Days":
-        start_date = now - timedelta(days=3)
-        query = query.gte("published_at", start_date.isoformat()).lte("published_at", now.isoformat())
-    elif time_range == "Last 7 Days":
-        start_date = now - timedelta(days=7)
-        query = query.gte("published_at", start_date.isoformat()).lte("published_at", now.isoformat())
-    elif time_range == "Last 30 Days":
-        start_date = now - timedelta(days=30)
-        query = query.gte("published_at", start_date.isoformat()).lte("published_at", now.isoformat())
-    
-    # Execute query
-    result = query.execute()
-    return result.data if result.data else []
+        # Apply exploitation status filter (only if not empty)
+        if exploit_filter and len(exploit_filter) > 0:
+            query = query.in_("exploitation_status", exploit_filter)
+        
+        # Apply source confidence filter (only if not empty)
+        if source_confidence_filter and len(source_confidence_filter) > 0:
+            query = query.in_("source_confidence", source_confidence_filter)
+        
+        # Apply reviewed filter
+        if not show_reviewed:
+            query = query.is_("reviewed_at", "null")
+        
+        # Apply time range filter (using published_at - when article was published)
+        now = datetime.now(timezone.utc)
+        
+        # Apply Delta View filter (What Changed Since Yesterday?)
+        if view_mode == "What Changed Since Yesterday?":
+            # Get last review timestamp from session state or default to 24 hours ago
+            if 'last_review_time' not in st.session_state:
+                st.session_state.last_review_time = (now - timedelta(days=1)).isoformat()
+            
+            last_review = st.session_state.last_review_time
+            
+            # Filter items that:
+            # 1. Are new (created after last review), OR
+            # 2. Had exploitation escalation, OR
+            # 3. Had signal strength upgrade
+            query = query.or_(
+                f"created_at.gt.{last_review},"
+                f"exploitation_escalated_at.gt.{last_review},"
+                f"signal_upgraded_at.gt.{last_review}"
+            )
+        
+        # Apply Unreviewed Only filter
+        if view_mode == "Unreviewed Only":
+            query = query.is_("last_analyst_review", "null")
+        
+        if time_range == "Today":
+            start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            query = query.gte("published_at", start_date.isoformat()).lte("published_at", end_date.isoformat())
+        elif time_range == "Last 3 Days":
+            start_date = now - timedelta(days=3)
+            query = query.gte("published_at", start_date.isoformat()).lte("published_at", now.isoformat())
+        elif time_range == "Last 7 Days":
+            start_date = now - timedelta(days=7)
+            query = query.gte("published_at", start_date.isoformat()).lte("published_at", now.isoformat())
+        elif time_range == "Last 30 Days":
+            start_date = now - timedelta(days=30)
+            query = query.gte("published_at", start_date.isoformat()).lte("published_at", now.isoformat())
+        
+        # Execute query with error handling
+        result = query.execute()
+        return result.data if result.data else []
+        
+    except Exception as e:
+        # Log error but return empty list instead of crashing
+        st.error(f"⚠️ Database query error: {str(e)}")
+        st.info("💡 Try adjusting your filters or check database connection.")
+        import traceback
+        with st.expander("🔧 Error Details"):
+            st.code(traceback.format_exc())
+        return []
 
-items = fetch_intelligence(
-    signal_filter=signal_filter,
-    exploit_filter=exploit_filter,
-    time_range=time_range,
-    show_reviewed=show_reviewed,
-    source_confidence_filter=source_confidence_filter,
-    view_mode=view_mode
-)
+# Fetch intelligence with error handling
+try:
+    items = fetch_intelligence(
+        signal_filter=signal_filter,
+        exploit_filter=exploit_filter,
+        time_range=time_range,
+        show_reviewed=show_reviewed,
+        source_confidence_filter=source_confidence_filter,
+        view_mode=view_mode
+    )
+except Exception as e:
+    st.error(f"Failed to fetch intelligence: {str(e)}")
+    st.info("Please check your database connection and try again.")
+    st.stop()
 
 # Update last review time when viewing "What Changed Since Yesterday?"
 if view_mode == "What Changed Since Yesterday?" and items:
@@ -696,10 +694,11 @@ elif view_mode == "Unreviewed Only":
 if not items:
     st.warning("No intelligence items match current filters. Adjust filters or run collector.")
 else:
-    for item in items:
-        # Type check: ensure item is a dict before accessing attributes
-        if not isinstance(item, dict):
-            continue
+    try:
+        for item in items:
+            # Type check: ensure item is a dict before accessing attributes
+            if not isinstance(item, dict):
+                continue
         
         # Determine exploitation badge
         exploit_status = str(item.get('exploitation_status') or 'unknown')
@@ -829,44 +828,47 @@ else:
         # EXTRACTED ENTITIES (CLICKABLE TOPIC LINKS) - Phase 3
         # =========================================================
         
-        # Extract entities from title and summary
+        # Extract entities from title and summary with error handling
         content_for_extraction = f"{item.get('title', '')} {item.get('summary', '')}"
         
+        all_entities = []
         if content_for_extraction.strip():
-            extractor = EntityExtractor()
-            entities = extractor.extract_all(content_for_extraction)
-            
-            # Combine all entity types
-            all_entities = []
-            
-            # CVEs
-            for cve in entities.get('cves', [])[:3]:  # Limit to 3
-                cve_value = cve.value if hasattr(cve, 'value') else str(cve)
-                all_entities.append(('CVE', cve_value, cve_value.lower().replace('-', '_')))
-            
-            # Threat actors
-            for actor in entities.get('threat_actors', [])[:2]:  # Limit to 2
-                actor_value = actor.value if hasattr(actor, 'value') else str(actor)
-                slug = actor_value.lower().replace(' ', '_').replace('-', '_')
-                all_entities.append(('Threat Actor', actor_value, slug))
-            
-            # Technologies
-            for tech in entities.get('technologies', [])[:2]:  # Limit to 2
-                tech_value = tech.value if hasattr(tech, 'value') else str(tech)
-                slug = tech_value.lower().replace(' ', '_').replace('-', '_')
-                all_entities.append(('Technology', tech_value, slug))
-            
-            # Attack types
-            for attack in entities.get('attack_types', [])[:2]:  # Limit to 2
-                attack_value = attack.value if hasattr(attack, 'value') else str(attack)
-                slug = attack_value.lower().replace(' ', '_').replace('-', '_')
-                all_entities.append(('Attack', attack_value, slug))
-            
-            # Malware
-            for malware in entities.get('malware', [])[:2]:  # Limit to 2
-                malware_value = malware.value if hasattr(malware, 'value') else str(malware)
-                slug = malware_value.lower().replace(' ', '_').replace('-', '_')
-                all_entities.append(('Malware', malware_value, slug))
+            try:
+                extractor = EntityExtractor()
+                entities = extractor.extract_all(content_for_extraction)
+                
+                # CVEs
+                for cve in entities.get('cves', [])[:3]:  # Limit to 3
+                    cve_value = cve.value if hasattr(cve, 'value') else str(cve)
+                    all_entities.append(('CVE', cve_value, cve_value.lower().replace('-', '_')))
+                
+                # Threat actors
+                for actor in entities.get('threat_actors', [])[:2]:  # Limit to 2
+                    actor_value = actor.value if hasattr(actor, 'value') else str(actor)
+                    slug = actor_value.lower().replace(' ', '_').replace('-', '_')
+                    all_entities.append(('Threat Actor', actor_value, slug))
+                
+                # Technologies
+                for tech in entities.get('technologies', [])[:2]:  # Limit to 2
+                    tech_value = tech.value if hasattr(tech, 'value') else str(tech)
+                    slug = tech_value.lower().replace(' ', '_').replace('-', '_')
+                    all_entities.append(('Technology', tech_value, slug))
+                
+                # Attack types
+                for attack in entities.get('attack_types', [])[:2]:  # Limit to 2
+                    attack_value = attack.value if hasattr(attack, 'value') else str(attack)
+                    slug = attack_value.lower().replace(' ', '_').replace('-', '_')
+                    all_entities.append(('Attack', attack_value, slug))
+                
+                # Malware
+                for malware in entities.get('malware', [])[:2]:  # Limit to 2
+                    malware_value = malware.value if hasattr(malware, 'value') else str(malware)
+                    slug = malware_value.lower().replace(' ', '_').replace('-', '_')
+                    all_entities.append(('Malware', malware_value, slug))
+            except Exception as e:
+                # Silently skip entity extraction if it fails - don't break the whole app
+                st.caption(f"⚠️ Entity extraction skipped: {str(e)[:50]}")
+                pass
             
             # Display entity buttons if any found
             if all_entities:
@@ -965,6 +967,13 @@ else:
             with col4:
                 article_url = str(item.get('url') or '#')
                 st.link_button("🔗 Read Article", article_url, use_container_width=True)
+    
+    except Exception as e:
+        st.error(f"⚠️ Error rendering intelligence cards: {str(e)}")
+        st.info("Some cards may not be displayed. Try refreshing or adjusting filters.")
+        import traceback
+        with st.expander("🔧 Error Details"):
+            st.code(traceback.format_exc())
 
 st.markdown("---")
 st.markdown(
