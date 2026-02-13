@@ -2,8 +2,9 @@ name: Collect Cyber News
 
 on:
   schedule:
-    # Run 3 times daily: 6 AM, 12 PM, 6 PM UTC
-    - cron: '0 6,12,18 * * *'
+    # Run 4 times daily: 6 AM, 12 PM, 6 PM, 11 PM UTC
+    # Covers morning, midday, evening, and late-night threat disclosures
+    - cron: '0 6,12,18,23 * * *'
   
   # Allow manual trigger
   workflow_dispatch:

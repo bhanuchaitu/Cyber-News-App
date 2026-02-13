@@ -586,6 +586,9 @@ def fetch_intelligence(
             start_date = now - timedelta(days=30)
             query = query.gte("published_at", start_date.isoformat())
         
+        # Sort by newest first
+        query = query.order("published_at", desc=True)
+        
         result = query.execute()
         return result.data if result.data else []
         
