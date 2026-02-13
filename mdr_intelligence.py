@@ -3,7 +3,6 @@ MDR Threat Intelligence Engine
 Transforms raw security news into analyst-ready intelligence
 """
 import re
-from datetime import datetime, timezone
 from typing import Dict, Tuple, List, Optional
 import hashlib
 from date_utils import calculate_days_between
@@ -461,8 +460,6 @@ def extract_technical_method(title: str, content: str, attack_vector: str) -> st
     """
     Extract brief technical method description (how attack works)
     """
-    text_lower = (title + ' ' + content).lower()
-    
     # Pattern-based extraction
     methods = {
         'Phishing': 'Delivers malicious payload via email attachment or link',
@@ -525,8 +522,7 @@ def build_evidence_list(
         evidence.append(f'CVE assigned ({cve_id})')
     
     # Check for multiple independent reports
-    multiple_sources = ['multiple reports', 'confirmed by', 'also reported']
-    # Would need access to content to check properly
+    # multiple_sources patterns - would need access to content to check properly
     
     return evidence, len(evidence)
 

@@ -30,7 +30,7 @@ from mdr_intelligence import (
     classify_unknown_reason
 )
 from attack_mapping import map_to_mitre_attack, map_to_kill_chain, extract_attack_name
-from date_utils import parse_feed_date_utc, is_within_last_n_days
+from date_utils import parse_feed_date_utc
 from knowledge_graph import KnowledgeGraphManager
 
 # Fix Windows console encoding
@@ -184,7 +184,7 @@ def collect_rss_feeds() -> List[Dict]:
             feed = feedparser.parse(feed_url)
             
             if not hasattr(feed, 'entries') or not feed.entries:
-                print(f"    ⚠️  No entries found")
+                print("    ⚠️  No entries found")
                 continue
             
             count = 0
@@ -311,7 +311,8 @@ def collect_rss_feeds() -> List[Dict]:
                     
                     # Create embedding
                     embedding_text = f"{title} {summary}"
-                    embedding = embed_model.encode(embedding_text).tolist()
+                    embedding_raw = embed_model.encode(embedding_text)
+                    embedding: list = embedding_raw.tolist() if hasattr(embedding_raw, 'tolist') else list(embedding_raw)  # type: ignore[union-attr]
                     
                     # Build MDR intelligence item
                     item = {
@@ -417,12 +418,12 @@ def save_to_supabase(items: List[Dict]) -> int:
             ).eq('url', item['url']).execute()
             
             # Detect exploitation status escalation
-            if existing.data and len(existing.data) > 0:
-                old_record = existing.data[0]
-                old_status = old_record.get('exploitation_status', 'unknown')
-                new_status = item.get('exploitation_status', 'unknown')
-                old_signal = old_record.get('signal_strength', 'Low')
-                new_signal = item.get('signal_strength', 'Low')
+            if existing.data and isinstance(existing.data, list) and len(existing.data) > 0:
+                old_record: dict = existing.data[0] if isinstance(existing.data[0], dict) else {}
+                old_status = str(old_record.get('exploitation_status', 'unknown'))
+                new_status = str(item.get('exploitation_status', 'unknown'))
+                old_signal = str(old_record.get('signal_strength', 'Low'))
+                new_signal = str(item.get('signal_strength', 'Low'))
                 
                 # Define escalation hierarchy
                 status_hierarchy = {
@@ -443,7 +444,7 @@ def save_to_supabase(items: List[Dict]) -> int:
                     item['previous_exploitation_status'] = old_status
                     item['exploitation_escalated_at'] = datetime.now(timezone.utc).isoformat()
                     escalations_detected += 1
-                    print(f"    ⬆️  ESCALATION DETECTED: {item['title'][:60]} - {old_status} → {new_status}")
+                    print(f"    ⬆️  ESCALATION DETECTED: {str(item.get('title', ''))[:60]} - {old_status} → {new_status}")
                 
                 # Check signal strength upgrade
                 if signal_hierarchy.get(new_signal, 0) > signal_hierarchy.get(old_signal, 0):
@@ -456,8 +457,10 @@ def save_to_supabase(items: List[Dict]) -> int:
                 on_conflict='url'
             ).execute()
             
-            if result.data and len(result.data) > 0:
-                article_id = result.data[0]['id']
+            result_data: list = result.data if isinstance(result.data, list) else []
+            if len(result_data) > 0:
+                first_record: dict = result_data[0] if isinstance(result_data[0], dict) else {}
+                article_id = int(first_record.get('id', 0))
                 saved += 1
                 
                 # Extract entities and populate knowledge graph
@@ -494,7 +497,7 @@ def print_summary(items: List[Dict]):
     medium = sum(1 for i in items if i.get('signal_strength') == 'Medium')
     low = sum(1 for i in items if i.get('signal_strength') == 'Low')
     
-    print(f"\n🎯 Signal Strength Distribution:")
+    print("\n🎯 Signal Strength Distribution:")
     print(f"   🔴 High Signal: {high} items (requires immediate attention)")
     print(f"   🟡 Medium Signal: {medium} items (monitor)")
     print(f"   🟢 Low Signal: {low} items (awareness)")
@@ -503,17 +506,17 @@ def print_summary(items: List[Dict]):
     active = sum(1 for i in items if i.get('exploitation_status') == 'actively_exploited')
     poc = sum(1 for i in items if i.get('exploitation_status') == 'poc_available')
     
-    print(f"\n⚠️  Exploitation Reality:")
+    print("\n⚠️  Exploitation Reality:")
     print(f"   🔴 Actively Exploited: {active} threats")
     print(f"   🟡 PoC Available: {poc} threats")
     
     # Event types
-    event_types = {}
+    event_types: Dict[str, int] = {}
     for item in items:
         et = item.get('event_type', 'Unknown')
         event_types[et] = event_types.get(et, 0) + 1
     
-    print(f"\n📋 Event Type Breakdown:")
+    print("\n📋 Event Type Breakdown:")
     for et, count in sorted(event_types.items(), key=lambda x: x[1], reverse=True):
         print(f"   • {et}: {count}")
     

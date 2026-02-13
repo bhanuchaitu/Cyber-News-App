@@ -4,7 +4,6 @@ CRITICAL: All feed dates MUST go through this module
 """
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Union
-import time
 
 
 def parse_feed_date_utc(time_struct) -> str:

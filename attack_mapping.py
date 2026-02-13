@@ -94,12 +94,12 @@ def extract_context(title: str, summary: str, category: str) -> str:
     
     # Category-specific context templates
     context_map = {
-        'Vulnerability': f"A security vulnerability has been identified. Review this to assess if your systems are affected and understand the exploitation risk.",
-        'Data Breach': f"A data breach has been reported. This may involve credential exposure, customer data, or sensitive information that could impact your organization.",
-        'Malware': f"New malware activity detected. Understanding this threat helps update detection rules and identify similar patterns in your environment.",
-        'Threat Intel': f"Threat actor activity reported. This intelligence helps assess if your organization fits the targeting profile and prepare defenses.",
-        'Tool/Resource': f"New security tool or resource available. This could enhance your security operations or defensive capabilities.",
-        'General Security': f"Security news and updates. Stay informed about the evolving threat landscape and industry developments."
+        'Vulnerability': "A security vulnerability has been identified. Review this to assess if your systems are affected and understand the exploitation risk.",
+        'Data Breach': "A data breach has been reported. This may involve credential exposure, customer data, or sensitive information that could impact your organization.",
+        'Malware': "New malware activity detected. Understanding this threat helps update detection rules and identify similar patterns in your environment.",
+        'Threat Intel': "Threat actor activity reported. This intelligence helps assess if your organization fits the targeting profile and prepare defenses.",
+        'Tool/Resource': "New security tool or resource available. This could enhance your security operations or defensive capabilities.",
+        'General Security': "Security news and updates. Stay informed about the evolving threat landscape and industry developments."
     }
     
     base_context = context_map.get(category, "Security update requiring review.")

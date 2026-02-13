@@ -1,6 +1,7 @@
 """
 Personal MDR Cyber Threat Intelligence Dashboard
 Optimized for 20-30 second scanning and rapid decision-making
+FIXED: Resolves blank screen issues when changing filters
 """
 
 import streamlit as st
@@ -9,18 +10,25 @@ from supabase import create_client
 import os
 from dotenv import load_dotenv
 import html
-import streamlit.components.v1 as components
 from knowledge_graph import KnowledgeGraphManager
 from knowledge_dashboard import render_knowledge_dashboard
 from date_utils import format_ist_datetime
 from topic_page import render_topic_page
 from entity_extractor import EntityExtractor
-from sentence_transformers import SentenceTransformer
+
+# Try to import sentence transformers - if it fails, semantic search will be disabled
+try:
+    from sentence_transformers import SentenceTransformer
+    SEMANTIC_SEARCH_AVAILABLE = True
+except Exception as e:
+    SentenceTransformer = None
+    SEMANTIC_SEARCH_AVAILABLE = False
+    print(f"⚠️ Semantic search disabled: {str(e)}")
 
 load_dotenv()
 
 # =========================================================
-# PAGE CONFIG
+# PAGE CONFIG - Must be first Streamlit command
 # =========================================================
 
 st.set_page_config(
@@ -301,13 +309,6 @@ st.markdown("""
     }
 }
 
-/* Landscape mobile */
-@media (max-width: 768px) and (orientation: landscape) {
-    .intel-card {
-        padding: 10px;
-    }
-}
-
 /* Touch-friendly buttons */
 @media (hover: none) and (pointer: coarse) {
     .stButton button {
@@ -322,15 +323,6 @@ st.markdown("""
     }
 }
 
-/* PWA specific - hide browser chrome when installed */
-@media (display-mode: standalone) {
-    body {
-        -webkit-user-select: none;
-        user-select: none;
-        -webkit-tap-highlight-color: transparent;
-    }
-}
-
 /* Dark mode support (native) */
 @media (prefers-color-scheme: dark) {
     :root {
@@ -342,37 +334,18 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# PWA SERVICE WORKER (Hidden Component)
-# =========================================================
-
-# Register service worker for PWA support (hidden, no visible output)
-components.html("""
-<script>
-    if ('serviceWorker' in navigator) {
-        window.addEventListener('load', function() {
-            navigator.serviceWorker.register('/static/service-worker.js')
-                .then(function(registration) {
-                    console.log('ServiceWorker registered:', registration.scope);
-                })
-                .catch(function(error) {
-                    console.log('ServiceWorker registration failed:', error);
-                });
-        });
-    }
-</script>
-""", height=0)
-
-# =========================================================
 # DATABASE CONNECTION
 # =========================================================
 
 @st.cache_resource
 def init_supabase():
-    # Try Streamlit Cloud secrets first, then fall back to .env
+    """Initialize Supabase client (cached, loads once per session)"""
     try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
-    except (KeyError, FileNotFoundError):
+        # Try Streamlit Cloud secrets first
+        url = st.secrets.get("SUPABASE_URL")
+        key = st.secrets.get("SUPABASE_KEY")
+    except Exception:
+        # Fall back to .env
         url = os.getenv("SUPABASE_URL")
         key = os.getenv("SUPABASE_KEY")
 
@@ -401,15 +374,22 @@ def init_supabase():
 @st.cache_resource
 def init_embedding_model():
     """Initialize sentence-transformers model (cached, loads once)"""
+    if not SEMANTIC_SEARCH_AVAILABLE or SentenceTransformer is None:
+        return None
     try:
         return SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
     except Exception as e:
-        st.error(f"⚠️ Failed to load AI model: {str(e)}")
+        print(f"Failed to load embedding model: {str(e)}")
         return None
 
+# Initialize connections
 supabase = init_supabase()
-# Don't initialize embedding model on load - only when needed for semantic search
-embed_model = None
+
+# Initialize session state
+if 'embed_model' not in st.session_state:
+    st.session_state.embed_model = None
+if 'last_review_time' not in st.session_state:
+    st.session_state.last_review_time = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
 
 # =========================================================
 # HEADER
@@ -429,111 +409,106 @@ st.sidebar.markdown("### ⚙️ Intelligence Filters")
 
 view_mode = st.sidebar.radio(
     "🌟 View Mode",
-    ["All Intelligence",
-     "What Changed Since Yesterday?",
-     "Unreviewed Only",
-     "Knowledge Graph"],
-    index=0
+    ["All Intelligence", "What Changed Since Yesterday?", "Unreviewed Only", "Knowledge Graph"],
+    index=0,
+    key="view_mode_selector"
 )
 
 signal_filter = st.sidebar.multiselect(
     "Signal Strength",
     ["High", "Medium", "Low"],
-    default=["High", "Medium"]
+    default=["High", "Medium"],
+    key="signal_filter_selector"
 )
 
 exploit_filter = st.sidebar.multiselect(
     "Exploitation Status",
     ["actively_exploited", "poc_available", "theoretical", "unknown"],
-    default=["actively_exploited", "poc_available"]
+    default=["actively_exploited", "poc_available"],
+    key="exploit_filter_selector"
 )
 
 time_range = st.sidebar.selectbox(
     "Time Range",
     ["Today", "Last 3 Days", "Last 7 Days", "Last 30 Days"],
-    index=2
+    index=2,
+    key="time_range_selector"
 )
 
-show_reviewed = st.sidebar.checkbox("Show Reviewed Items", value=False)
+show_reviewed = st.sidebar.checkbox("Show Reviewed Items", value=False, key="show_reviewed_checkbox")
 
 source_confidence_filter = st.sidebar.multiselect(
     "Source Confidence",
     ["High", "Medium", "Low"],
-    default=["High", "Medium"]
+    default=["High", "Medium"],
+    key="confidence_filter_selector"
 )
 
 st.sidebar.markdown("---")
 
 # =========================================================
-# SEMANTIC SEARCH (Phase 2 - No API Key Required)
+# SEMANTIC SEARCH (Phase 2)
 # =========================================================
 
-st.sidebar.markdown("### 🔍 Semantic Search")
-st.sidebar.markdown("*Find topics by meaning, not just keywords*")
+if SEMANTIC_SEARCH_AVAILABLE:
+    st.sidebar.markdown("### 🔍 Semantic Search")
+    st.sidebar.markdown("*Find topics by meaning, not just keywords*")
 
-search_query = st.sidebar.text_input(
-    "Search topics",
-    placeholder="e.g., ransomware targeting healthcare",
-    help="Uses local AI embeddings — no API key needed!"
-)
-
-if search_query:
-    with st.sidebar:
-        with st.spinner("🧠 Searching..."):
-            try:
-                # Initialize embedding model only when needed (lazy loading)
-                if embed_model is None:
-                    embed_model = init_embedding_model()
-                
-                if embed_model is None:
-                    st.error("⚠️ AI model failed to load. Semantic search unavailable.")
-                    st.info("💡 Try using filters instead or check torch installation.")
-                else:
-                    # Generate embedding for search query
-                    query_embedding = embed_model.encode(search_query).tolist()
+    search_query = st.sidebar.text_input(
+        "Search topics",
+        placeholder="e.g., ransomware targeting healthcare",
+        help="Uses local AI embeddings — no API key needed!",
+        key="search_query_input"
+    )
+    
+    if search_query:
+        with st.sidebar:
+            with st.spinner("🧠 Searching..."):
+                try:
+                    # Initialize embedding model only when needed
+                    if st.session_state.embed_model is None:
+                        st.session_state.embed_model = init_embedding_model()
                     
-                    # Call database RPC function
-                    search_results = supabase.rpc(
-                        'search_similar_items',
-                        {
-                            'query_embedding': query_embedding,
-                            'match_count': 5
-                        }
-                    ).execute()
-                    
-                    if search_results.data and len(search_results.data) > 0:
-                        st.markdown("**🎯 Top Matches:**")
-                        for result in search_results.data:
-                            similarity_pct = int(result['similarity'] * 100)
-                            
-                            # Color code by similarity
-                            if similarity_pct >= 70:
-                                color = '🟢'
-                            elif similarity_pct >= 50:
-                                color = '🟡'
-                            else:
-                                color = '🔵'
-                            
-                            # Create clickable link to topic
-                            if st.button(
-                                f"{color} {result['name']} ({similarity_pct}%)",
-                                key=f"search_{result['id']}",
-                                help=f"Type: {result['type']}\nSimilarity: {similarity_pct}%"
-                            ):
-                                st.session_state.viewing_topic = result['id']
-                                st.rerun()
+                    if st.session_state.embed_model is not None:
+                        # Generate embedding and convert to list
+                        embedding_result = st.session_state.embed_model.encode(search_query)
+                        query_embedding: list = embedding_result.tolist() if hasattr(embedding_result, 'tolist') else list(embedding_result)  # type: ignore[union-attr]
                         
-                        st.markdown("---")
-                        st.caption(f"💡 Found {len(search_results.data)} similar topics")
-                    else:
-                        st.info("No similar topics found. Try different keywords.")
-            
-            except Exception as e:
-                st.error(f"Search error: {str(e)}")
-                st.caption("💡 Ensure search_similar_items() function exists in database")
-                import traceback
-                with st.expander("🔧 Error Details"):
-                    st.code(traceback.format_exc())
+                        # Search
+                        search_results = supabase.rpc(
+                            'search_similar_items',
+                            {
+                                'query_embedding': query_embedding,
+                                'match_count': 5
+                            }
+                        ).execute()
+                        
+                        # Type checking for search results
+                        results_data: list = search_results.data if isinstance(search_results.data, list) else []
+                        if len(results_data) > 0:
+                            st.markdown("**🎯 Top Matches:**")
+                            for raw_result in results_data:
+                                result: dict = dict(raw_result) if not isinstance(raw_result, dict) else raw_result
+                                similarity_pct = int(float(result.get('similarity', 0)) * 100)
+                                
+                                if similarity_pct >= 70:
+                                    color = '🟢'
+                                elif similarity_pct >= 50:
+                                    color = '🟡'
+                                else:
+                                    color = '🔵'
+                                
+                                if st.button(
+                                    f"{color} {result.get('name', 'Unknown')} ({similarity_pct}%)",
+                                    key=f"search_{result.get('id', 0)}",
+                                    help=f"Type: {result.get('type', 'Unknown')}\nSimilarity: {similarity_pct}%"
+                                ):
+                                    st.session_state.viewing_topic = result.get('id')
+                                    st.rerun()
+                        else:
+                            st.info("No similar topics found.")
+                except Exception as e:
+                    st.error(f"Search error: {str(e)[:100]}")
 
 st.sidebar.markdown("---")
 
@@ -542,13 +517,8 @@ st.sidebar.markdown("---")
 # =========================================================
 
 if view_mode == "Knowledge Graph":
-    # Initialize Knowledge Graph Manager
     kg_manager = KnowledgeGraphManager(supabase)
-    
-    # Render knowledge dashboard
     render_knowledge_dashboard(kg_manager)
-    
-    # Exit early - don't fetch regular intelligence items
     st.stop()
 
 # =========================================================
@@ -556,27 +526,13 @@ if view_mode == "Knowledge Graph":
 # =========================================================
 
 if 'viewing_topic' in st.session_state and st.session_state.viewing_topic:
-    # Initialize Knowledge Graph Manager
     kg_manager = KnowledgeGraphManager(supabase)
-    
-    # Render topic page
-    render_topic_page(kg_manager, st.session_state.viewing_topic)
-    
-    # Exit early - don't fetch regular intelligence items
+    render_topic_page(kg_manager, str(st.session_state.viewing_topic))
     st.stop()
 
 # =========================================================
-# FETCH DATA
+# FETCH DATA WITH LOADING STATE
 # =========================================================
-
-# Debug: Show filter status
-with st.expander("🔧 Debug Info"):
-    st.write(f"**View Mode:** {view_mode}")
-    st.write(f"**Signal Filter:** {signal_filter} (count: {len(signal_filter) if signal_filter else 0})")
-    st.write(f"**Exploit Filter:** {exploit_filter} (count: {len(exploit_filter) if exploit_filter else 0})")
-    st.write(f"**Time Range:** {time_range}")
-    st.write(f"**Source Confidence:**  {source_confidence_filter} (count: {len(source_confidence_filter) if source_confidence_filter else 0})")
-    st.write(f"**Show Reviewed:** {show_reviewed}")
 
 def fetch_intelligence(
     signal_filter=None,
@@ -586,64 +542,35 @@ def fetch_intelligence(
     source_confidence_filter=None,
     view_mode="All Intelligence"
 ):
-    """
-    Fetch intelligence items with applied filters
-    
-    Args:
-        signal_filter: List of signal strengths to include
-        exploit_filter: List of exploitation statuses to include
-        time_range: Time range string ("Today", "Last 3 Days", etc.)
-        show_reviewed: Whether to show reviewed items
-        source_confidence_filter: List of source confidence levels to include
-        view_mode: View mode ("All Intelligence", "What Changed Since Yesterday?", "Unreviewed Only")
-    
-    Returns:
-        List of filtered intelligence items
-    """
+    """Fetch intelligence items with applied filters"""
     try:
-        # Start with base query
         query = supabase.table("daily_brief").select("*")
         
-        # Apply signal strength filter (only if not empty)
+        # Apply filters only if not empty
         if signal_filter and len(signal_filter) > 0:
             query = query.in_("signal_strength", signal_filter)
         
-        # Apply exploitation status filter (only if not empty)
         if exploit_filter and len(exploit_filter) > 0:
             query = query.in_("exploitation_status", exploit_filter)
         
-        # Apply source confidence filter (only if not empty)
         if source_confidence_filter and len(source_confidence_filter) > 0:
             query = query.in_("source_confidence", source_confidence_filter)
         
-        # Apply reviewed filter
         if not show_reviewed:
             query = query.is_("reviewed_at", "null")
         
-        # Apply time range filter (using published_at - when article was published)
+        # Time range
         now = datetime.now(timezone.utc)
         
-        # Apply Delta View filter (What Changed Since Yesterday?)
         if view_mode == "What Changed Since Yesterday?":
-            # Get last review timestamp from session state or default to 24 hours ago
-            if 'last_review_time' not in st.session_state:
-                st.session_state.last_review_time = (now - timedelta(days=1)).isoformat()
-            
             last_review = st.session_state.last_review_time
-            
-            # Filter items that:
-            # 1. Are new (created after last review), OR
-            # 2. Had exploitation escalation, OR
-            # 3. Had signal strength upgrade
             query = query.or_(
                 f"created_at.gt.{last_review},"
                 f"exploitation_escalated_at.gt.{last_review},"
                 f"signal_upgraded_at.gt.{last_review}"
             )
-        
-        # Apply Unreviewed Only filter
-        if view_mode == "Unreviewed Only":
-            query = query.is_("last_analyst_review", "null")
+        elif view_mode == "Unreviewed Only":
+            query = query.is_("reviewed_at", "null")
         
         if time_range == "Today":
             start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -651,29 +578,23 @@ def fetch_intelligence(
             query = query.gte("published_at", start_date.isoformat()).lte("published_at", end_date.isoformat())
         elif time_range == "Last 3 Days":
             start_date = now - timedelta(days=3)
-            query = query.gte("published_at", start_date.isoformat()).lte("published_at", now.isoformat())
+            query = query.gte("published_at", start_date.isoformat())
         elif time_range == "Last 7 Days":
             start_date = now - timedelta(days=7)
-            query = query.gte("published_at", start_date.isoformat()).lte("published_at", now.isoformat())
+            query = query.gte("published_at", start_date.isoformat())
         elif time_range == "Last 30 Days":
             start_date = now - timedelta(days=30)
-            query = query.gte("published_at", start_date.isoformat()).lte("published_at", now.isoformat())
+            query = query.gte("published_at", start_date.isoformat())
         
-        # Execute query with error handling
         result = query.execute()
         return result.data if result.data else []
         
     except Exception as e:
-        # Log error but return empty list instead of crashing
         st.error(f"⚠️ Database query error: {str(e)}")
-        st.info("💡 Try adjusting your filters or check database connection.")
-        import traceback
-        with st.expander("🔧 Error Details"):
-            st.code(traceback.format_exc())
         return []
 
-# Fetch intelligence with error handling
-try:
+# Show loading spinner
+with st.spinner("🔄 Loading intelligence..."):
     items = fetch_intelligence(
         signal_filter=signal_filter,
         exploit_filter=exploit_filter,
@@ -682,16 +603,16 @@ try:
         source_confidence_filter=source_confidence_filter,
         view_mode=view_mode
     )
-except Exception as e:
-    st.error(f"Failed to fetch intelligence: {str(e)}")
-    st.info("Please check your database connection and try again.")
-    st.stop()
 
-# Update last review time when viewing "What Changed Since Yesterday?"
+# Update last review time
 if view_mode == "What Changed Since Yesterday?" and items:
     st.session_state.last_review_time = datetime.now(timezone.utc).isoformat()
 
-# Delta View header
+# =========================================================
+# DISPLAY INTELLIGENCE CARDS
+# =========================================================
+
+# View mode headers
 if view_mode == "What Changed Since Yesterday?":
     st.markdown("### ⚡ What Changed Since Your Last Review")
     if 'last_review_time' in st.session_state:
@@ -706,15 +627,23 @@ elif view_mode == "Unreviewed Only":
     st.caption("Items you haven't analyzed yet")
     st.markdown("---")
 
-# ============ INTELLIGENCE CARDS ============
-if not items:
-    st.warning("No intelligence items match current filters. Adjust filters or run collector.")
-else:
+# No results message
+if not items or len(items) == 0:
+    st.warning("⚠️ No intelligence items match current filters.")
+    st.info("💡 Try adjusting your filters or run the collector to gather new intelligence.")
+    st.markdown("**Current filters:**")
+    st.write(f"- Signal Strength: {signal_filter if signal_filter else 'None selected'}")
+    st.write(f"- Exploitation Status: {exploit_filter if exploit_filter else 'None selected'}")
+    st.write(f"- Time Range: {time_range}")
+    st.write(f"- Source Confidence: {source_confidence_filter if source_confidence_filter else 'None selected'}")
+    st.stop()
+
+# Render cards (with per-card error handling)
+for idx, item in enumerate(items):
     try:
-        for item in items:
-            # Type check: ensure item is a dict before accessing attributes
-            if not isinstance(item, dict):
-                continue
+        # Type check
+        if not isinstance(item, dict):
+            continue
         
         # Determine exploitation badge
         exploit_status = str(item.get('exploitation_status') or 'unknown')
@@ -742,16 +671,16 @@ else:
         delta = item.get('delta_reason')
         delta_html = f'<span class="delta-badge">⚡ {delta}</span>' if delta else ''
         
-        # Escalation indicator (MUST-HAVE FEATURE)
+        # Escalation indicator
         escalation_html = ''
         if item.get('exploitation_escalated_at'):
             prev_status = str(item.get('previous_exploitation_status') or 'unknown')
-            escalation_html = f'<span style="background: linear-gradient(135deg, #ff4444, #ff0000); color: white; padding: 6px 12px; border-radius: 4px; font-weight: 700; display: inline-block; margin-right: 8px; animation: pulse 2s infinite;">↑ ESCALATED from {prev_status.replace("_", " ").title()}</span>'
+            escalation_html = f'<span style="background: linear-gradient(135deg, #ff4444, #ff0000); color: white; padding: 6px 12px; border-radius: 4px; font-weight: 700; display: inline-block; margin-right: 8px;">↑ ESCALATED from {prev_status.replace("_", " ").title()}</span>'
         elif item.get('signal_upgraded_at'):
             prev_signal = str(item.get('previous_signal_strength') or 'Low')
             escalation_html = f'<span style="background: linear-gradient(135deg, #ff8800, #ffaa00); color: white; padding: 6px 12px; border-radius: 4px; font-weight: 600; display: inline-block; margin-right: 8px;">↑ Signal Upgraded from {prev_signal}</span>'
         
-        # Threat velocity (MUST-HAVE FEATURE)
+        # Threat velocity
         velocity_html = ''
         if item.get('threat_velocity') and item['threat_velocity'] != 'UNKNOWN':
             velocity = str(item['threat_velocity'])
@@ -760,9 +689,9 @@ else:
                 'MODERATE': 'var(--mdr-orange)',
                 'SLOW': 'var(--mdr-green)'
             }
-            velocity_color = str(velocity_colors.get(velocity, '#888'))
+            velocity_color = velocity_colors.get(velocity, '#888')
             velocity_icons = {'FAST': '🔥', 'MODERATE': '⚡', 'SLOW': '📊'}
-            velocity_icon = str(velocity_icons.get(velocity, '⏱️'))
+            velocity_icon = velocity_icons.get(velocity, '⏱️')
             velocity_html = f'<span style="color: {velocity_color}; font-weight: 600; margin-left: 8px;">{velocity_icon} Velocity: {velocity}</span>'
         
         # Build card
@@ -774,11 +703,11 @@ else:
         card_html += '<div style="margin: 8px 0;">'
         card_html += event_html + ' ' + delta_html
         
-        # Add CVE badge
+        # CVE badge
         if item.get('cve_id'):
-            cve_badge = f'<span class="event-chip" style="border-color: var(--mdr-orange)">🔍 {html.escape(str(item.get("cve_id", "")))}'
+            cve_badge = f'<span class="event-chip" style="border-color: var(--mdr-orange)">🔍 {html.escape(str(item["cve_id"]))}'
             if item.get('cvss_score'):
-                cve_badge += f' (CVSS {html.escape(str(item.get("cvss_score", "")))})'  
+                cve_badge += f' (CVSS {html.escape(str(item["cvss_score"]))})'  
             cve_badge += '</span>'
             card_html += cve_badge
         
@@ -788,30 +717,30 @@ else:
         
         # Attack name
         if item.get('attack_name'):
-            card_html += f'<span class="event-chip" style="border-color: var(--mdr-purple); color: var(--mdr-purple)">🎯 {html.escape(str(item.get("attack_name", "")))}</span>'
+            card_html += f'<span class="event-chip" style="border-color: var(--mdr-purple); color: var(--mdr-purple)">🎯 {html.escape(str(item["attack_name"]))}</span>'
         
-        # Windows Event Log ID (NEW FEATURE)
+        # Windows Event ID
         if item.get('windows_event_id'):
-            card_html += f'<span class="event-chip" style="border-color: #00aaff; color: #00aaff">🪟 Event ID: {html.escape(str(item.get("windows_event_id", "")))}</span>'
+            card_html += f'<span class="event-chip" style="border-color: #00aaff; color: #00aaff">🪟 Event ID: {html.escape(str(item["windows_event_id"]))}</span>'
         
         card_html += '</div>'
         
-        # MDR ANALYST TAKE - Most important field
+        # MDR ANALYST TAKE
         if item.get('mdr_analyst_take'):
             card_html += f'<div class="mdr-take">💡 <strong>Analyst Take:</strong> {html.escape(str(item["mdr_analyst_take"]))}</div>'
         
-        # EVIDENCE/CONFIDENCE BANNER (MUST-HAVE FEATURE)
+        # EVIDENCE/CONFIDENCE
         evidence_sources = item.get('evidence_sources')
         if evidence_sources and isinstance(evidence_sources, list) and len(evidence_sources) > 0:
             evidence_html = '<div style="background: rgba(0,200,136,0.1); border: 1px solid rgba(0,200,136,0.3); padding: 10px; border-radius: 6px; margin: 12px 0;">'
             evidence_html += '<strong>🔍 Evidence & Confidence:</strong><br/>'
-            for evidence in evidence_sources:
+            for evidence in evidence_sources[:5]:  # Limit to 5
                 evidence_html += f'<span style="color: #00cc88; margin-right: 12px;">✔ {html.escape(str(evidence))}</span><br/>'
-            evidence_html += f'<span style="color: #888; font-size: 12px; margin-top: 4px; display: block;">{item.get("evidence_count", 0)} evidence sources — {item.get("source_confidence", "Unknown")} confidence</span>'
+            evidence_html += f'<span style="color: #888; font-size: 12px;">{item.get("evidence_count", 0)} sources — {item.get("source_confidence", "Unknown")} confidence</span>'
             evidence_html += '</div>'
             card_html += evidence_html
         
-        # Meta info row
+        # Meta info
         meta_html = '<div class="meta-info">'
         meta_html += f'<span class="meta-item">📡 <strong>{item.get("source", "Unknown")}</strong></span>'
         
@@ -826,129 +755,103 @@ else:
             meta_html += f'<span class="meta-item">📅 First: {formatted_date}</span>'
         
         if item.get('weaponization_speed'):
-            days = item.get('weaponization_speed')
+            days = item['weaponization_speed']
             if isinstance(days, (int, float)) and days <= 3:
                 meta_html += f'<span class="meta-item" style="color: var(--mdr-red)">⚡ {days} day weaponization</span>'
         
         if item.get('source_confidence'):
             conf_colors = {'High': 'var(--mdr-green)', 'Medium': 'var(--mdr-orange)', 'Low': '#666'}
-            conf_color = str(conf_colors.get(str(item.get('source_confidence', 'Unknown')), '#888'))
-            meta_html += f'<span class="meta-item" style="color: {conf_color}">📊 {item.get("source_confidence", "Unknown")} Confidence</span>'
+            conf_color = conf_colors.get(item['source_confidence'], '#888')
+            meta_html += f'<span class="meta-item" style="color: {conf_color}">📊 {item["source_confidence"]} Confidence</span>'
         
         meta_html += '</div>'
         card_html += meta_html + '</div>'
         
         st.markdown(card_html, unsafe_allow_html=True)
         
-        # =========================================================
-        # EXTRACTED ENTITIES (CLICKABLE TOPIC LINKS) - Phase 3
-        # =========================================================
-        
-        # Extract entities from title and summary with error handling
+        # Extract entities
         content_for_extraction = f"{item.get('title', '')} {item.get('summary', '')}"
-        
         all_entities = []
+        
         if content_for_extraction.strip():
             try:
                 extractor = EntityExtractor()
                 entities = extractor.extract_all(content_for_extraction)
                 
-                # CVEs
-                for cve in entities.get('cves', [])[:3]:  # Limit to 3
+                for cve in entities.get('cves', [])[:3]:
                     cve_value = cve.value if hasattr(cve, 'value') else str(cve)
                     all_entities.append(('CVE', cve_value, cve_value.lower().replace('-', '_')))
                 
-                # Threat actors
-                for actor in entities.get('threat_actors', [])[:2]:  # Limit to 2
+                for actor in entities.get('threat_actors', [])[:2]:
                     actor_value = actor.value if hasattr(actor, 'value') else str(actor)
                     slug = actor_value.lower().replace(' ', '_').replace('-', '_')
                     all_entities.append(('Threat Actor', actor_value, slug))
                 
-                # Technologies
-                for tech in entities.get('technologies', [])[:2]:  # Limit to 2
+                for tech in entities.get('technologies', [])[:2]:
                     tech_value = tech.value if hasattr(tech, 'value') else str(tech)
                     slug = tech_value.lower().replace(' ', '_').replace('-', '_')
                     all_entities.append(('Technology', tech_value, slug))
                 
-                # Attack types
-                for attack in entities.get('attack_types', [])[:2]:  # Limit to 2
+                for attack in entities.get('attack_types', [])[:2]:
                     attack_value = attack.value if hasattr(attack, 'value') else str(attack)
                     slug = attack_value.lower().replace(' ', '_').replace('-', '_')
                     all_entities.append(('Attack', attack_value, slug))
                 
-                # Malware
-                for malware in entities.get('malware', [])[:2]:  # Limit to 2
+                for malware in entities.get('malware', [])[:2]:
                     malware_value = malware.value if hasattr(malware, 'value') else str(malware)
                     slug = malware_value.lower().replace(' ', '_').replace('-', '_')
                     all_entities.append(('Malware', malware_value, slug))
-            except Exception as e:
-                # Silently skip entity extraction if it fails - don't break the whole app
-                st.caption(f"⚠️ Entity extraction skipped: {str(e)[:50]}")
-                pass
+            except Exception:
+                pass  # Silently skip entity extraction errors
             
-            # Display entity buttons if any found
+            # Display entity buttons
             if all_entities:
                 st.markdown("**🏷️ Extracted Topics:**")
-                
-                # Create columns for entity buttons (max 5 per row)
                 cols = st.columns(min(len(all_entities), 5))
                 
-                for idx, (entity_type, entity_name, slug) in enumerate(all_entities[:5]):
-                    with cols[idx]:
+                for idx_entity, (entity_type, entity_name, slug) in enumerate(all_entities[:5]):
+                    with cols[idx_entity]:
                         if st.button(
                             f"{entity_name}",
-                            key=f"entity_{item['id']}_{slug}",
+                            key=f"entity_{item['id']}_{slug}_{idx}",
                             help=f"View {entity_type} page",
                             use_container_width=True
                         ):
-                            st.session_state['viewing_topic'] = slug
+                            st.session_state.viewing_topic = slug
                             st.rerun()
         
         # Expandable details
         with st.expander("📖 Full Intelligence Report"):
-            # Summary
             if item.get('summary'):
                 st.markdown(f"**📄 Summary:**\n\n{item['summary']}")
             
-            # Technical method
             if item.get('technical_method'):
                 st.markdown(f"**⚙️ Technical Method:**\n\n{item['technical_method']}")
             
-            # Impact outcome
             if item.get('impact_outcome') and item['impact_outcome'] != 'Unknown':
                 st.markdown(f"**💥 Impact:** {item['impact_outcome']}")
             
             st.markdown("---")
             
             # MITRE ATT&CK
-            mitre_tactics = item.get('mitre_tactics')
-            mitre_techniques = item.get('mitre_techniques')
-            if mitre_tactics or mitre_techniques:
-                st.markdown("**⚔️ MITRE ATT&CK Mapping:**")
-                if mitre_tactics and isinstance(mitre_tactics, list):
-                    tactics = ' '.join([f'`{t}`' for t in mitre_tactics])
+            if item.get('mitre_tactics') or item.get('mitre_techniques'):
+                st.markdown("**⚔️ MITRE ATT&CK:**")
+                if item.get('mitre_tactics'):
+                    tactics = ' '.join([f'`{t}`' for t in item['mitre_tactics']])
                     st.markdown(f"- **Tactics:** {tactics}")
-                if mitre_techniques and isinstance(mitre_techniques, list):
-                    techniques = ' '.join([f'`{t}`' for t in mitre_techniques])
+                if item.get('mitre_techniques'):
+                    techniques = ' '.join([f'`{t}`' for t in item['mitre_techniques']])
                     st.markdown(f"- **Techniques:** {techniques}")
             
             # Kill Chain
-            kill_chain = item.get('kill_chain_phases')
-            if kill_chain and isinstance(kill_chain, list):
-                phases = ' '.join([f'`{p}`' for p in kill_chain])
-                st.markdown(f"**🔗 Cyber Kill Chain:** {phases}")
+            if item.get('kill_chain_phases'):
+                phases = ' '.join([f'`{p}`' for p in item['kill_chain_phases']])
+                st.markdown(f"**🔗 Kill Chain:** {phases}")
             
             # Pattern tags
-            pattern_tags = item.get('pattern_tags')
-            if pattern_tags and isinstance(pattern_tags, list):
-                tags = ' '.join([f'`#{t}`' for t in pattern_tags])
-                st.markdown(f"**🏷️ Pattern Tags:** {tags}")
-            
-            # Windows Event Log IDs (NEW FEATURE)
-            if item.get('windows_event_id'):
-                st.markdown(f"**🪟 Windows Event Log ID:** `{item.get('windows_event_id')}`")
-                if item.get('windows_event_description'):
-                    st.markdown(f"   _{item.get('windows_event_description')}_")
+            if item.get('pattern_tags'):
+                tags = ' '.join([f'`#{t}`' for t in item['pattern_tags']])
+                st.markdown(f"**🏷️ Patterns:** {tags}")
             
             st.markdown("---")
             
@@ -956,43 +859,35 @@ else:
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                if st.button("✅ Mark Reviewed", key=f"review_{item['id']}", use_container_width=True):
+                if st.button("✅ Mark Reviewed", key=f"review_{item['id']}_{idx}", use_container_width=True):
                     supabase.table('daily_brief').update({
                         'reviewed_at': datetime.now().isoformat()
                     }).eq('id', item['id']).execute()
                     st.success("Marked as reviewed")
-                    st.cache_data.clear()
                     st.rerun()
             
             with col2:
-                if st.button("⭐ Bookmark", key=f"book_{item['id']}", use_container_width=True):
+                if st.button("⭐ Bookmark", key=f"book_{item['id']}_{idx}", use_container_width=True):
                     supabase.table('daily_brief').update({
                         'bookmarked': True
                     }).eq('id', item['id']).execute()
                     st.success("Bookmarked")
-                    st.cache_data.clear()
             
             with col3:
-                if st.button("📌 Follow Up", key=f"follow_{item['id']}", use_container_width=True):
+                if st.button("📌 Follow Up", key=f"follow_{item['id']}_{idx}", use_container_width=True):
                     supabase.table('daily_brief').update({
                         'follow_up_required': True
                     }).eq('id', item['id']).execute()
                     st.success("Marked for follow-up")
-                    st.cache_data.clear()
             
             with col4:
                 article_url = str(item.get('url') or '#')
                 st.link_button("🔗 Read Article", article_url, use_container_width=True)
     
     except Exception as e:
-        st.error(f"⚠️ Error rendering intelligence cards: {str(e)}")
-        st.info("Some cards may not be displayed. Try refreshing or adjusting filters.")
-        import traceback
-        with st.expander("🔧 Error Details"):
-            st.code(traceback.format_exc())
+        # Per-card error handling - don't crash entire app
+        st.error(f"⚠️ Error rendering card #{idx+1}: {str(e)[:100]}")
+        continue
 
 st.markdown("---")
-st.markdown(
-    "🎯 **Personal MDR Threat Intelligence Platform** — "
-    "Public sources only, optimized for analyst efficiency"
-)
+st.markdown("🎯 **Personal MDR Threat Intelligence Platform** — Optimized for analyst efficiency")

@@ -3,7 +3,7 @@ Knowledge Graph Manager
 Handles topic creation, linking, and relationship management
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 from supabase import Client
 from entity_extractor import EntityExtractor, extract_and_format
@@ -355,7 +355,7 @@ class KnowledgeGraphManager:
         except Exception as e:
             print(f"Error getting statistics: {e}")
             return {'topics': 0, 'relationships': 0, 'iocs': 0}    
-    def search_topics(self, query: str, topic_type: Optional[str] = None, limit: int = 20) -> List[Dict]:
+    def search_topics(self, query: str, topic_type: Optional[str] = None, limit: int = 20) -> List[Any]:
         """
         Search topics by name or slug
         
@@ -456,7 +456,7 @@ class KnowledgeGraphManager:
             print(f"Error getting relationships: {e}")
             return {'outgoing': [], 'incoming': []}
     
-    def export_iocs(self, ioc_type: Optional[str] = None, min_confidence: float = 0.0, days: int = 30) -> List[Dict]:
+    def export_iocs(self, ioc_type: Optional[str] = None, min_confidence: float = 0.0, days: int = 30) -> List[Any]:
         """
         Export IOCs for SIEM/threat intelligence feeds
         
