@@ -10,7 +10,16 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List
 import feedparser
 import requests
-from sentence_transformers import SentenceTransformer
+
+# Graceful fallback if sentence-transformers unavailable (cloud deployments)
+try:
+    from sentence_transformers import SentenceTransformer
+    EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    SentenceTransformer = None  # type: ignore
+    EMBEDDINGS_AVAILABLE = False
+    print("⚠️ sentence-transformers not installed — embeddings will be skipped")
+
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -47,7 +56,15 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-embed_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+
+# Only initialize embedding model if available
+embed_model = None
+if EMBEDDINGS_AVAILABLE and SentenceTransformer is not None:
+    try:
+        embed_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+    except Exception as e:
+        print(f"⚠️ Failed to load embedding model: {e}")
+        EMBEDDINGS_AVAILABLE = False
 
 # RSS Feeds (reputable sources only)
 RSS_FEEDS = {
@@ -309,10 +326,12 @@ def collect_rss_feeds() -> List[Dict]:
                     if exploitation_status == 'unknown':
                         unknown_reason = classify_unknown_reason(title, summary, cve_id, source_name)
                     
-                    # Create embedding
+                    # Create embedding (if model available)
                     embedding_text = f"{title} {summary}"
-                    embedding_raw = embed_model.encode(embedding_text)
-                    embedding: list = embedding_raw.tolist() if hasattr(embedding_raw, 'tolist') else list(embedding_raw)  # type: ignore[union-attr]
+                    embedding = None
+                    if embed_model is not None:
+                        embedding_raw = embed_model.encode(embedding_text)
+                        embedding = embedding_raw.tolist() if hasattr(embedding_raw, 'tolist') else list(embedding_raw)  # type: ignore[union-attr]
                     
                     # Build MDR intelligence item
                     item = {

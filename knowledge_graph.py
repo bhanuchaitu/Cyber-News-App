@@ -3,6 +3,7 @@ Knowledge Graph Manager
 Handles topic creation, linking, and relationship management
 """
 
+import re
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 from supabase import Client
@@ -355,6 +356,24 @@ class KnowledgeGraphManager:
         except Exception as e:
             print(f"Error getting statistics: {e}")
             return {'topics': 0, 'relationships': 0, 'iocs': 0}    
+    @staticmethod
+    def _sanitize_search_query(query: str) -> str:
+        """
+        Sanitize user input for PostgREST ilike filters.
+        Escapes special characters that could break or inject filter syntax.
+        Prevents CWE-943: Improper Neutralization of Special Elements in Data Query Logic.
+        """
+        if not query or not isinstance(query, str):
+            return ""
+        # Strip to reasonable length (256 chars max)
+        query = query[:256].strip()
+        # Remove characters that could inject PostgREST filter operators
+        # PostgREST uses . and , as delimiters in filter strings
+        sanitized = re.sub(r'[,.()\[\]{}\\;\'\"!]', '', query)
+        # Escape SQL LIKE wildcards (% and _) in the user input itself
+        sanitized = sanitized.replace('%', '').replace('_', ' ')
+        return sanitized
+
     def search_topics(self, query: str, topic_type: Optional[str] = None, limit: int = 20) -> List[Any]:
         """
         Search topics by name or slug
@@ -365,12 +384,17 @@ class KnowledgeGraphManager:
             limit: Max results to return
         """
         try:
+            # Sanitize user input to prevent PostgREST filter injection (CWE-943)
+            safe_query = self._sanitize_search_query(query)
+            if not safe_query:
+                return []
+
             query_builder = self.supabase.table('topics').select('*')
             
-            # Text search on name or slug
-            query_builder = query_builder.or_(f"name.ilike.%{query}%,slug.ilike.%{query}%")
+            # Text search on name or slug — safe_query is sanitized
+            query_builder = query_builder.or_(f"name.ilike.%{safe_query}%,slug.ilike.%{safe_query}%")
             
-            # Filter by type if specified
+            # Filter by type if specified — use .eq() which parameterizes
             if topic_type:
                 query_builder = query_builder.eq('type', topic_type)
             

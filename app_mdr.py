@@ -748,10 +748,10 @@ for idx, item in enumerate(items):
         meta_html += f'<span class="meta-item">📡 <strong>{item.get("source", "Unknown")}</strong></span>'
         
         if item.get('primary_target') and item['primary_target'] != 'Unspecified':
-            meta_html += f'<span class="meta-item">🎯 {item["primary_target"]}</span>'
+            meta_html += f'<span class="meta-item">🎯 {html.escape(str(item["primary_target"]))}</span>'
         
         if item.get('attack_vector') and item['attack_vector'] != 'Unknown':
-            meta_html += f'<span class="meta-item">📍 {item["attack_vector"]}</span>'
+            meta_html += f'<span class="meta-item">📍 {html.escape(str(item["attack_vector"]))}</span>'
         
         if item.get('first_observed_date'):
             formatted_date = format_ist_datetime(item['first_observed_date'], "%d %b %Y %H:%M IST")
@@ -765,7 +765,7 @@ for idx, item in enumerate(items):
         if item.get('source_confidence'):
             conf_colors = {'High': 'var(--mdr-green)', 'Medium': 'var(--mdr-orange)', 'Low': '#666'}
             conf_color = conf_colors.get(item['source_confidence'], '#888')
-            meta_html += f'<span class="meta-item" style="color: {conf_color}">📊 {item["source_confidence"]} Confidence</span>'
+            meta_html += f'<span class="meta-item" style="color: {conf_color}">📊 {html.escape(str(item["source_confidence"]))} Confidence</span>'
         
         meta_html += '</div>'
         card_html += meta_html + '</div>'

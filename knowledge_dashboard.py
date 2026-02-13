@@ -11,6 +11,20 @@ from date_utils import format_ist_datetime
 import json
 
 
+def _sanitize_csv_cell(value: str) -> str:
+    """
+    Prevent CSV injection (CWE-1236) by escaping cells that start with
+    formula-triggering characters. When opened in Excel/Google Sheets,
+    a cell starting with =, +, -, @, \\t, or \\r could execute formulas.
+    """
+    if not isinstance(value, str):
+        return str(value)
+    value = value.strip()
+    if value and value[0] in ('=', '+', '-', '@', '\t', '\r'):
+        return "'" + value  # Prefix with single quote to neutralize formula
+    return value
+
+
 def render_knowledge_overview(kg_manager: KnowledgeGraphManager):
     """Render knowledge graph overview with statistics"""
     st.header("🧠 Knowledge Graph Overview")
@@ -277,8 +291,13 @@ def render_ioc_dashboard(kg_manager: KnowledgeGraphManager):
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            # CSV export
-            csv = ioc_df.to_csv(index=False)
+            # CSV export (sanitize to prevent CSV injection — CWE-1236)
+            safe_df = ioc_df.copy()
+            for col_name in safe_df.columns:
+                safe_df[col_name] = safe_df[col_name].apply(
+                    lambda x: _sanitize_csv_cell(str(x)) if isinstance(x, str) else x
+                )
+            csv = safe_df.to_csv(index=False)
             st.download_button(
                 label="Download CSV",
                 data=csv,
@@ -309,8 +328,8 @@ def render_ioc_dashboard(kg_manager: KnowledgeGraphManager):
             )
         
         with col3:
-            # Simple text list for quick copy-paste
-            text_list = "\n".join([ioc.get('value', '') for ioc in iocs])
+            # Simple text list for quick copy-paste (sanitized for safety)
+            text_list = "\n".join([_sanitize_csv_cell(ioc.get('value', '')) for ioc in iocs])
             st.download_button(
                 label="Download TXT",
                 data=text_list,

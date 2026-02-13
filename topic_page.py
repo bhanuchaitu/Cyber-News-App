@@ -390,7 +390,7 @@ def render_topic_notes(kg_manager: KnowledgeGraphManager, topic_id: int, topic_s
     st.markdown("---")
     st.markdown("#### 📈 Expertise Level")
     
-    expertise_raw = user_data.get('expertise_level', 0) if (user_data and isinstance(user_data, dict)) else 0
+    expertise_raw = user_data.get('expertise_score', 0) if (user_data and isinstance(user_data, dict)) else 0
     expertise = int(expertise_raw) if isinstance(expertise_raw, (int, float)) else 0
     
     col1, col2 = st.columns([3, 1])
@@ -458,13 +458,41 @@ def save_user_knowledge(kg_manager: KnowledgeGraphManager, topic_id: int, topic_
     """Save or update user knowledge for a topic"""
     
     try:
+        # --- Input validation (CWE-20: Improper Input Validation) ---
+        # Validate expertise is within expected range
+        if not isinstance(expertise, int) or expertise < 0 or expertise > 100:
+            st.error("Expertise level must be between 0 and 100.")
+            return
+        
+        # Validate notes length (prevent storage abuse)
+        MAX_NOTES_LENGTH = 10000
+        if notes and len(notes) > MAX_NOTES_LENGTH:
+            st.error(f"Notes too long ({len(notes)} chars). Maximum is {MAX_NOTES_LENGTH} characters.")
+            return
+        
+        # Strip null bytes and control characters (except newlines/tabs) from notes
+        if notes:
+            notes = notes.replace('\x00', '')
+            import re as _re
+            notes = _re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', notes)
+        
+        # Validate topic_id is a positive integer
+        if not isinstance(topic_id, int) or topic_id <= 0:
+            st.error("Invalid topic ID.")
+            return
+
         # Check if record exists
         result = kg_manager.supabase.table('user_knowledge').select('id').eq('topic_id', topic_id).execute()
         
+        # Map numeric score to text enum for expertise_level column
+        level_map = {5: 'expert', 4: 'advanced', 3: 'intermediate', 2: 'intermediate', 1: 'beginner', 0: 'beginner'}
+        expertise_label = level_map.get(get_expertise_level(expertise), 'beginner')
+
         data = {
             'topic_id': topic_id,
             'notes': notes,
-            'expertise_level': expertise,
+            'expertise_level': expertise_label,
+            'expertise_score': expertise,
             'updated_at': datetime.now().isoformat()
         }
         
@@ -477,4 +505,5 @@ def save_user_knowledge(kg_manager: KnowledgeGraphManager, topic_id: int, topic_
             kg_manager.supabase.table('user_knowledge').insert(data).execute()
             
     except Exception as e:
-        st.error(f"Error saving notes: {e}")
+        print(f"Error saving notes: {e}")  # Log internally only
+        st.error("Failed to save notes. Please try again.")
