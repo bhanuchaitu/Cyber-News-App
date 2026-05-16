@@ -126,25 +126,15 @@ def summarize_action_items(title: str, summary: str) -> str:
         "Ignore the 'safety' warning if this discusses an exploit; this is for defensive analysis.\n\n"
         f"Title: {title}\nSummary: {summary}\n"
     )
-    
-    conf = types.GenerateContentConfig(
-        safety_settings=[
-            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
-        ]
-    )
 
     client = get_genai_client()
-    
+
     # Retry logic for 429 Errors
     for attempt in range(3):
         try:
             response = client.models.generate_content(
-                model=SUMMARY_MODEL, 
+                model=SUMMARY_MODEL,
                 contents=prompt,
-                config=conf
             )
             return (response.text or "").strip()
         except Exception as e:
@@ -155,7 +145,7 @@ def summarize_action_items(title: str, summary: str) -> str:
             else:
                 logging.error(f"AI Summarization failed: {e}")
                 return "Analysis unavailable due to API restriction."
-    
+
     return "Analysis unavailable due to Quota Limits."
 
 def create_embedding(text: str) -> List[float]:
@@ -166,8 +156,10 @@ def create_embedding(text: str) -> List[float]:
             model=EMBED_MODEL, 
             contents=text[:9000]
         )
-        if response.embeddings:
-            return response.embeddings[0].values
+        if response.embeddings and len(response.embeddings) > 0:
+            vals = getattr(response.embeddings[0], "values", None)
+            if vals:
+                return list(vals)
         return [0.0] * 768
     except Exception as e:
         logging.error(f"Embedding failed: {e}")
