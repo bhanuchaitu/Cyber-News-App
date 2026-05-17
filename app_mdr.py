@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import html
 import os
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
@@ -18,7 +20,19 @@ from supabase import create_client
 from date_utils import format_ist_datetime
 
 
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parent
+load_dotenv(PROJECT_ROOT / ".env")
+
+SOURCES = [
+    "BleepingComputer",
+    "The Hacker News",
+    "Krebs on Security",
+    "Dark Reading",
+    "Schneier on Security",
+]
+
+REVIEW_STATUSES = ["New", "Monitoring", "Action Needed", "Reviewed", "Ignored"]
+PRIORITY_ACTIONS = {"Action Needed", "Patch Soon", "Malware", "Supply Chain", "Breach"}
 
 st.set_page_config(
     page_title="Cyber News Daily Brief",
@@ -27,12 +41,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-
 st.markdown(
     """
 <style>
 :root {
     --bg-card: #151922;
+    --bg-soft: #10141d;
     --border: #2b3240;
     --text-muted: #9aa4b2;
     --red: #ef4444;
@@ -46,14 +60,11 @@ st.markdown(
     border-left: 5px solid var(--border);
     border-radius: 8px;
     padding: 18px;
-    margin: 0 0 16px 0;
+    margin: 0 0 14px 0;
 }
-.brief-card.high {
-    border-left-color: var(--red);
-}
-.brief-card.medium {
-    border-left-color: var(--amber);
-}
+.brief-card.high { border-left-color: var(--red); }
+.brief-card.medium { border-left-color: var(--amber); }
+.brief-card.watch { box-shadow: 0 0 0 1px rgba(59,130,246,0.22) inset; }
 .badge {
     display: inline-block;
     border-radius: 999px;
@@ -70,7 +81,7 @@ st.markdown(
 .badge.blue { background: rgba(59,130,246,0.16); color: #bfdbfe; border-color: rgba(59,130,246,0.4); }
 .badge.gray { background: rgba(148,163,184,0.12); color: #cbd5e1; border-color: rgba(148,163,184,0.3); }
 .card-title {
-    font-size: 21px;
+    font-size: 20px;
     line-height: 1.3;
     margin: 4px 0 10px 0;
     font-weight: 750;
@@ -96,6 +107,11 @@ st.markdown(
     font-size: 13px;
     margin-top: 12px;
 }
+.story-note {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin-top: 8px;
+}
 @media (max-width: 640px) {
     .brief-card { padding: 14px; }
     .card-title { font-size: 18px; }
@@ -112,18 +128,40 @@ def safe_text(value: Any, fallback: str = "") -> str:
     return html.escape(str(value))
 
 
+def as_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if item]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
 @st.cache_resource
 def init_supabase():
-    try:
-        url = st.secrets.get("SUPABASE_URL")
-        key = st.secrets.get("SUPABASE_KEY")
-    except Exception:
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_KEY")
+    url = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
+    key = (
+        os.getenv("SUPABASE_KEY")
+        or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+        or os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY")
+    )
+
+    if not url or not key:
+        try:
+            url = st.secrets.get("SUPABASE_URL") or st.secrets.get("NEXT_PUBLIC_SUPABASE_URL")
+            key = (
+                st.secrets.get("SUPABASE_KEY")
+                or st.secrets.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+                or st.secrets.get("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY")
+            )
+        except Exception:
+            pass
 
     if not url or not key:
         st.error("Missing Supabase credentials.")
-        st.info("Set SUPABASE_URL and SUPABASE_KEY in Streamlit secrets or a local .env file.")
+        st.info(
+            "Set SUPABASE_URL and SUPABASE_KEY, or NEXT_PUBLIC_SUPABASE_URL and "
+            "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, in Streamlit secrets or a local .env file."
+        )
         st.stop()
 
     return create_client(url, key)
@@ -131,23 +169,14 @@ def init_supabase():
 
 supabase = init_supabase()
 
-
 st.title("Cyber News Daily Brief")
-st.caption("A focused feed for quickly spotting what matters in the threat landscape.")
-
+st.caption("A focused feed for spotting what matters, skipping noise, and keeping daily review short.")
 
 st.sidebar.header("Filters")
 
-signal_filter = st.sidebar.multiselect(
-    "Signal strength",
-    ["High", "Medium", "Low"],
-    default=["High", "Medium"],
-)
-
-exploit_filter = st.sidebar.multiselect(
-    "Exploitation status",
-    ["actively_exploited", "poc_available", "theoretical", "unknown"],
-    default=["actively_exploited", "poc_available"],
+quick_view = st.sidebar.selectbox(
+    "Quick view",
+    ["Priority Queue", "All Items", "Watchlist", "Action Needed", "Follow Up", "Weekly Digest"],
 )
 
 time_range = st.sidebar.selectbox(
@@ -156,13 +185,39 @@ time_range = st.sidebar.selectbox(
     index=2,
 )
 
-show_reviewed = st.sidebar.checkbox("Show reviewed items", value=False)
+selected_sources = st.sidebar.multiselect("Sources", SOURCES, default=SOURCES)
+
+signal_filter = st.sidebar.multiselect(
+    "Signal strength",
+    ["High", "Medium", "Low"],
+    default=["High", "Medium"] if quick_view != "All Items" else ["High", "Medium", "Low"],
+)
+
+exploit_filter = st.sidebar.multiselect(
+    "Exploitation status",
+    ["actively_exploited", "poc_available", "theoretical", "unknown"],
+    default=["actively_exploited", "poc_available"] if quick_view == "Priority Queue" else [
+        "actively_exploited",
+        "poc_available",
+        "theoretical",
+        "unknown",
+    ],
+)
+
+review_filter = st.sidebar.multiselect(
+    "Review status",
+    REVIEW_STATUSES,
+    default=["New", "Monitoring", "Action Needed"],
+)
 
 source_confidence_filter = st.sidebar.multiselect(
     "Source confidence",
     ["High", "Medium", "Low"],
-    default=["High", "Medium"],
+    default=["High", "Medium", "Low"],
 )
+
+hide_noise = st.sidebar.checkbox("Hide likely noise", value=True)
+group_duplicates = st.sidebar.checkbox("Group duplicate stories", value=True)
 
 
 def range_start(selected_range: str) -> datetime:
@@ -185,14 +240,65 @@ def fetch_items() -> list[dict[str, Any]]:
         query = query.in_("exploitation_status", exploit_filter)
     if source_confidence_filter:
         query = query.in_("source_confidence", source_confidence_filter)
-    if not show_reviewed:
-        query = query.is_("reviewed_at", "null")
 
     query = query.gte("published_at", range_start(time_range).isoformat())
     query = query.order("published_at", desc=True)
 
     result = query.execute()
     return result.data if isinstance(result.data, list) else []
+
+
+def item_review_status(item: dict[str, Any]) -> str:
+    if item.get("review_status"):
+        return str(item["review_status"])
+    if item.get("reviewed_at"):
+        return "Reviewed"
+    if item.get("follow_up_required"):
+        return "Action Needed"
+    return "New"
+
+
+def apply_client_filters(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    filtered = []
+
+    for item in items:
+        if selected_sources and item.get("source") not in selected_sources:
+            continue
+        if review_filter and item_review_status(item) not in review_filter:
+            continue
+        if hide_noise and item.get("noise_reason"):
+            continue
+
+        action_category = str(item.get("action_category") or "Awareness")
+        watchlist_matches = as_list(item.get("watchlist_matches"))
+
+        if quick_view == "Priority Queue":
+            if action_category not in PRIORITY_ACTIONS and not watchlist_matches:
+                continue
+        elif quick_view == "Watchlist" and not watchlist_matches:
+            continue
+        elif quick_view == "Action Needed" and action_category != "Action Needed":
+            continue
+        elif quick_view == "Follow Up" and not item.get("follow_up_required"):
+            continue
+
+        filtered.append(item)
+
+    return filtered
+
+
+def story_groups(items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    if not group_duplicates:
+        return [[item] for item in items]
+
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in items:
+        key = str(item.get("story_key") or item.get("cve_id") or item.get("url") or item.get("id"))
+        grouped[key].append(item)
+
+    groups = list(grouped.values())
+    groups.sort(key=lambda group: str(group[0].get("published_at") or ""), reverse=True)
+    return groups
 
 
 def badge(text: str, color: str = "gray") -> str:
@@ -215,12 +321,49 @@ def signal_badge(signal: str) -> str:
     return badge(f"{signal} signal", colors.get(signal, "gray"))
 
 
-def render_card(item: dict[str, Any], index: int) -> None:
+def action_badge(action_category: str) -> str:
+    colors = {
+        "Action Needed": "red",
+        "Patch Soon": "amber",
+        "Watch": "blue",
+        "Breach": "amber",
+        "Malware": "red",
+        "Supply Chain": "amber",
+        "Awareness": "gray",
+    }
+    return badge(action_category, colors.get(action_category, "gray"))
+
+
+def primary_item(group: list[dict[str, Any]]) -> dict[str, Any]:
+    status_rank = {"actively_exploited": 4, "poc_available": 3, "theoretical": 2, "unknown": 1}
+    signal_rank = {"High": 3, "Medium": 2, "Low": 1}
+    return sorted(
+        group,
+        key=lambda item: (
+            status_rank.get(str(item.get("exploitation_status")), 0),
+            signal_rank.get(str(item.get("signal_strength")), 0),
+            str(item.get("published_at") or ""),
+        ),
+        reverse=True,
+    )[0]
+
+
+def update_item(article_id: Any, payload: dict[str, Any]) -> None:
+    supabase.table("daily_brief").update(payload).eq("id", article_id).execute()
+    st.rerun()
+
+
+def render_card(group: list[dict[str, Any]], index: int) -> None:
+    item = primary_item(group)
     signal = str(item.get("signal_strength") or "Low")
     status = str(item.get("exploitation_status") or "unknown")
+    action_category = str(item.get("action_category") or "Awareness")
+    watchlist_matches = as_list(item.get("watchlist_matches"))
     card_weight = "high" if signal == "High" else "medium" if signal == "Medium" else ""
+    watch_class = "watch" if watchlist_matches else ""
 
     chips = [
+        action_badge(action_category),
         exploitation_badge(status),
         signal_badge(signal),
         badge(str(item.get("event_type") or "News"), "blue"),
@@ -235,8 +378,8 @@ def render_card(item: dict[str, Any], index: int) -> None:
     if item.get("cisa_exploited"):
         chips.append(badge("CISA KEV", "red"))
 
-    if item.get("attack_name"):
-        chips.append(badge(str(item["attack_name"]), "gray"))
+    for watch in watchlist_matches[:3]:
+        chips.append(badge(f"Watch: {watch}", "blue"))
 
     summary = safe_text(item.get("summary"), "No summary available.")
     analyst_take = safe_text(item.get("mdr_analyst_take"))
@@ -244,93 +387,161 @@ def render_card(item: dict[str, Any], index: int) -> None:
     published = format_ist_datetime(item.get("published_at"), "%d %b %Y %H:%M IST")
     confidence = safe_text(item.get("source_confidence"), "Unknown")
     target = safe_text(item.get("primary_target"), "Unspecified")
+    review_status = safe_text(item_review_status(item))
+
+    duplicate_note = ""
+    if len(group) > 1:
+        sources = sorted({str(row.get("source") or "Unknown") for row in group})
+        duplicate_note = (
+            f'<div class="story-note">Grouped story: {len(group)} reports from '
+            f'{safe_text(", ".join(sources))}</div>'
+        )
 
     report_html = ""
     if analyst_take:
         report_html = f'<div class="analyst-take"><strong>Analyst take:</strong> {analyst_take}</div>'
 
-    st.markdown(
-        f"""
-<article class="brief-card {card_weight}">
-    <div>{''.join(chips)}</div>
-    <div class="card-title">{safe_text(item.get("title"), "Untitled")}</div>
-    <div class="summary">{summary}</div>
-    {report_html}
-    <div class="meta">
-        <span>{source}</span>
-        <span>{published}</span>
-        <span>{confidence} confidence</span>
-        <span>Target: {target}</span>
-    </div>
-</article>
-""",
-        unsafe_allow_html=True,
+    card_html = (
+        f'<article class="brief-card {card_weight} {watch_class}">'
+        f"<div>{''.join(chips)}</div>"
+        f'<div class="card-title">{safe_text(item.get("title"), "Untitled")}</div>'
+        f'<div class="summary">{summary}</div>'
+        f"{report_html}"
+        f"{duplicate_note}"
+        '<div class="meta">'
+        f"<span>{source}</span>"
+        f"<span>{published}</span>"
+        f"<span>{confidence} confidence</span>"
+        f"<span>Target: {target}</span>"
+        f"<span>Status: {review_status}</span>"
+        "</div>"
+        "</article>"
     )
 
+    st.markdown(card_html, unsafe_allow_html=True)
+
     with st.expander("Details and actions"):
+        if len(group) > 1:
+            st.markdown("**Related reports:**")
+            for related in group:
+                st.markdown(f"- [{related.get('source', 'Unknown')}: {related.get('title', 'Untitled')}]({related.get('url', '#')})")
+            st.divider()
+
         if item.get("signal_strength_reason"):
             st.markdown(f"**Why this signal:** {item['signal_strength_reason']}")
         if item.get("technical_method"):
             st.markdown(f"**Technical method:** {item['technical_method']}")
         if item.get("impact_outcome") and item.get("impact_outcome") != "Unknown":
             st.markdown(f"**Impact:** {item['impact_outcome']}")
+        if item.get("noise_reason"):
+            st.markdown(f"**Noise reason:** {item['noise_reason']}")
         if item.get("mitre_tactics") or item.get("mitre_techniques"):
             st.markdown("**MITRE ATT&CK:**")
             if item.get("mitre_tactics"):
-                st.write(", ".join(item["mitre_tactics"]))
+                st.write(", ".join(as_list(item["mitre_tactics"])))
             if item.get("mitre_techniques"):
-                st.write(", ".join(item["mitre_techniques"]))
+                st.write(", ".join(as_list(item["mitre_techniques"])))
         if item.get("kill_chain_phases"):
-            st.markdown(f"**Kill chain:** {', '.join(item['kill_chain_phases'])}")
+            st.markdown(f"**Kill chain:** {', '.join(as_list(item['kill_chain_phases']))}")
 
-        col1, col2, col3, col4 = st.columns(4)
         article_id = item.get("id")
+        col1, col2, col3, col4, col5 = st.columns(5)
 
         with col1:
-            if st.button("Mark reviewed", key=f"review_{article_id}_{index}", use_container_width=True):
-                supabase.table("daily_brief").update(
-                    {"reviewed_at": datetime.now(timezone.utc).isoformat()}
-                ).eq("id", article_id).execute()
-                st.rerun()
-
+            if st.button("Reviewed", key=f"review_{article_id}_{index}", use_container_width=True):
+                update_item(article_id, {"reviewed_at": datetime.now(timezone.utc).isoformat(), "review_status": "Reviewed"})
         with col2:
-            if st.button("Bookmark", key=f"bookmark_{article_id}_{index}", use_container_width=True):
-                supabase.table("daily_brief").update({"bookmarked": True}).eq("id", article_id).execute()
-                st.toast("Bookmarked")
-
+            if st.button("Monitor", key=f"monitor_{article_id}_{index}", use_container_width=True):
+                update_item(article_id, {"review_status": "Monitoring"})
         with col3:
-            if st.button("Follow up", key=f"follow_{article_id}_{index}", use_container_width=True):
-                supabase.table("daily_brief").update({"follow_up_required": True}).eq("id", article_id).execute()
-                st.toast("Marked for follow-up")
-
+            if st.button("Action", key=f"action_{article_id}_{index}", use_container_width=True):
+                update_item(article_id, {"follow_up_required": True, "review_status": "Action Needed"})
         with col4:
-            st.link_button("Read article", str(item.get("url") or "#"), use_container_width=True)
+            if st.button("Ignore", key=f"ignore_{article_id}_{index}", use_container_width=True):
+                update_item(article_id, {"reviewed_at": datetime.now(timezone.utc).isoformat(), "review_status": "Ignored"})
+        with col5:
+            st.link_button("Read", str(item.get("url") or "#"), use_container_width=True)
+
+        if st.button("Bookmark", key=f"bookmark_{article_id}_{index}", use_container_width=True):
+            update_item(article_id, {"bookmarked": True})
+
+
+def render_summary(items: list[dict[str, Any]], groups: list[list[dict[str, Any]]]) -> None:
+    high_count = sum(1 for item in items if item.get("signal_strength") == "High")
+    active_count = sum(1 for item in items if item.get("exploitation_status") == "actively_exploited")
+    watch_count = sum(1 for item in items if as_list(item.get("watchlist_matches")))
+    follow_count = sum(1 for item in items if item.get("follow_up_required") or item_review_status(item) == "Action Needed")
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Stories", len(groups))
+    col2.metric("Items", len(items))
+    col3.metric("High signal", high_count)
+    col4.metric("Actively exploited", active_count)
+    col5.metric("Follow-up", follow_count)
+
+    if watch_count:
+        st.caption(f"{watch_count} item(s) match your watchlist.")
+
+
+def render_weekly_digest(items: list[dict[str, Any]]) -> None:
+    st.subheader("Weekly Digest")
+
+    action_counts = Counter(str(item.get("action_category") or "Awareness") for item in items)
+    vendors = Counter()
+    cves = Counter()
+    sources = Counter()
+
+    for item in items:
+        sources.update([str(item.get("source") or "Unknown")])
+        cve = item.get("cve_id")
+        if cve:
+            cves.update([str(cve)])
+        for match in as_list(item.get("watchlist_matches")):
+            vendors.update([match])
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("**Action mix**")
+        st.write(dict(action_counts.most_common(6)) or "No data")
+    with col2:
+        st.markdown("**Top watchlist hits**")
+        st.write(dict(vendors.most_common(6)) or "No watchlist hits")
+    with col3:
+        st.markdown("**Top CVEs**")
+        st.write(dict(cves.most_common(6)) or "No CVEs")
+
+    st.markdown("**Open follow-ups**")
+    followups = [item for item in items if item.get("follow_up_required") or item_review_status(item) == "Action Needed"]
+    if followups:
+        for item in followups[:10]:
+            st.markdown(f"- **{item.get('source', 'Unknown')}**: [{item.get('title', 'Untitled')}]({item.get('url', '#')})")
+    else:
+        st.caption("No open follow-ups in this range.")
 
 
 with st.spinner("Loading brief..."):
     try:
-        items = fetch_items()
+        raw_items = fetch_items()
     except Exception as exc:
         st.error(f"Database query failed: {exc}")
         st.stop()
 
+items = apply_client_filters(raw_items)
+groups = story_groups(items)
 
 if not items:
     st.warning("No articles match the current filters.")
     st.info("Try widening the filters or run `python collector_mdr.py` to collect fresh news.")
     st.stop()
 
+render_summary(items, groups)
 
-high_count = sum(1 for item in items if item.get("signal_strength") == "High")
-active_count = sum(1 for item in items if item.get("exploitation_status") == "actively_exploited")
-
-col1, col2, col3 = st.columns(3)
-col1.metric("Items", len(items))
-col2.metric("High signal", high_count)
-col3.metric("Actively exploited", active_count)
+if quick_view == "Weekly Digest":
+    st.divider()
+    render_weekly_digest(items)
+    st.stop()
 
 st.divider()
 
-for idx, item in enumerate(items):
-    if isinstance(item, dict):
-        render_card(item, idx)
+for idx, group in enumerate(groups):
+    render_card(group, idx)
